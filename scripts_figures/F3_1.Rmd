@@ -1,0 +1,237 @@
+---
+title: "Read PHESANT results"
+---
+
+```{r}
+library(tidyverse)
+library(scales)
+source('../setup.R')
+```
+
+## Auxiliary functions
+
+```{r}
+adjust_pos <- function(pos, loop_size=2120) {
+  if_else(pos<=loop_size, pos-loop_size-1, pos-loop_size)
+}
+```
+
+```{r}
+clean_phesant <- function(df) {
+  
+  df |> 
+    filter(varType != 'CAT-SIN' | ! grepl('-', varName)) |>
+    group_by(varName) |>
+    separate(n, into = c('aux', 'total_n'),
+             sep = '\\(', fill = 'left',remove = F) |>
+    separate(aux, into = c('controls', 'cases'), sep='\\/' ) |> 
+    mutate(total_n = gsub('\\)', '', total_n)) |>
+    filter(! is.na(as.numeric(total_n))) |>
+    select(-n) |>
+    mutate(total_n = as.numeric(total_n)) |>
+    ungroup()
+}
+```
+
+## All Unrelated
+
+```{r}
+phesant_unrel_results_w1 <- bind_rows(
+  read_tsv(
+  file.path(root_fd, '02_analysis', 'data', '01_phesant', 'all.tsv'),
+  col_types = cols()),
+  read_tsv(
+  file.path(root_fd, '02_analysis', 'data', '03_phesant_new_1st', 'all.tsv'),
+  col_types = cols())) |>
+  clean_phesant() |>
+  mutate(description = gsub('ophill', 'ophil', description)) |>
+  arrange(pvalue) |>
+  mutate(fdr = p.adjust(pvalue, method = 'fdr')) |>
+  select(ID = varName, description, cases, total_n, pos_ref, ref, alt, beta, pvalue, fdr, lower, upper) 
+```
+
+
+```{r}
+phesant_unrel_results_no_cancer_w1 <- phesant_unrel_results_w1 |> 
+  group_by(ID, description) |>
+  filter(! grepl('Cancer|cancer', description)) |> 
+  mutate(fdr_var = p.adjust(pvalue, method = 'fdr')) |>
+  ungroup() |>
+  mutate(fdr = p.adjust(pvalue, method = 'fdr'))
+```
+
+
+```{r}
+phesant_unrel_results_no_cancer_w1_g <- phesant_unrel_results_w1 |> 
+  group_by(ID, description) |>
+  filter(! grepl('Cancer|cancer', description)) |>
+  group_by(pos_ref, ref, alt) |> 
+  mutate(fdr_var = p.adjust(pvalue, method = 'fdr')) |> 
+  filter(fdr_var < 0.01) |> 
+  ungroup() |> 
+  rowwise() |> 
+  mutate(type = case_when(
+    grepl('Cancer|cancer', description)  ~  'CANCER',
+    grepl('height|weight|Waist|Weight', description) ~  'BODY SIZE',
+    grepl('count|crit|volume|cyte|phil|Platelet', description) ~  'BLOOD COUNT',
+    grepl('first reported|glasses', description) ~  'OTHER\nCONDITIONS',
+    TRUE ~  'BLOOD BIOCHEM.')) |>
+  mutate(INDEL = (nchar(ref) > 1 | nchar(alt) > 1),
+         lpval = -log10(pvalue))
+```
+
+```{r}
+phesant_unrel_results_no_cancer_w1_g_desc <- phesant_unrel_results_no_cancer_w1_g |> 
+  filter(fdr < 0.01) |>
+  mutate(variant = paste0(pos_ref, ':', ref, '>', alt)) |>
+  mutate(description = paste0(variant, ' v. UKB field ID ', ID, ' (', description,  ')')) |>
+  mutate(lfdr = -log10(fdr)) |>
+  arrange(desc(lfdr)) |>
+  mutate(description = (fct_inorder(description)))
+```
+
+```{r}
+phesant_unrel_results_beta_p <- phesant_unrel_results_no_cancer_w1_g_desc |>
+  ggplot(aes(x = beta, xmin = lower, xmax = upper, y = fct_rev(description))) +
+  geom_vline(xintercept = 0, linewidth = 0.5, colour = 'grey80') +
+  geom_crossbar(fill = 'grey90', colour = 'grey60',
+                linewidth = 0.5, fatten = 1, alpha = 0.5) +
+  geom_point(shape = 23, fill = 'grey50', alpha = 0.8, size = 2) +
+  labs(y = '', x = 'Standardised Beta, 95% CI') +
+  scale_x_continuous(limits = c(-0.025, 0.025),
+                     breaks = c(-0.02, 0, 0.02),
+                     labels = c(-0.02, '', 0.02)) +
+  theme_pub() +
+  theme(axis.text.y = element_text(size = 10))
+```
+
+```{r}
+phesant_unrel_results_beta_p |>
+  ggsave(filename = file.path('..', 'figures', 'F3A_betas.pdf'), 
+         height = 6, width = 10.5, dpi = 900)
+```
+
+
+```{r}
+phesant_unrel_results_fdr_p <- phesant_unrel_results_no_cancer_w1_g_desc |>
+  ggplot(aes(x = lfdr, y = fct_rev(description))) +
+  geom_col(fill = 'grey90', colour = 'grey20', linewidth = 0.75, width = 0.8) +
+  theme_bw() +
+  labs(y = '', x = bquote(bold(-log[10](FDR)))) +
+  theme_pub() +
+  theme(
+    axis.text.y = element_text(size = 10),
+    axis.ticks.y = element_blank())
+```
+
+```{r}
+phesant_unrel_results_fdr_p |>
+  ggsave(filename = file.path('..', 'figures', 'F3A_fdr.pdf'), 
+         height = 6, width = 10.5, dpi = 900)
+```
+
+
+```{r}
+phesant_unrel_results_no_cancer_w1_g_p <- phesant_unrel_results_no_cancer_w1_g |>
+  mutate(
+    description = if_else(is.na(cases), description, 
+                          paste0(description, ' (N = ', cases, ')'))) |>
+  mutate(INDEL = if_else(INDEL, 'INDEL', 'SNV')) |>
+  mutate(effect_sign = if_else(sign(beta) < 0, '-', '+')) |>
+  ggplot(aes(x = pos_ref, y = description)) +  
+  geom_vline(xintercept = 0, colour = 'grey90')  +
+  annotate(
+    'rect',
+    xmin = 3658, xmax = 5526, ymin = -Inf, ymax = Inf,
+    alpha = 0.3, fill = 'grey90') +
+  annotate(
+    'rect',
+    xmin = 6597, xmax = 6753, ymin = -Inf, ymax = Inf,
+    alpha = 0.3, fill = 'grey90') +
+  annotate(
+    'rect',
+    xmin = 7921, xmax = 12971, ymin = -Inf, ymax = Inf,
+    alpha = 0.3, fill = 'grey90') + 
+  geom_point(aes(shape = INDEL, fill = beta, 
+                 size = lpval,
+                 colour = effect_sign),
+             alpha = 0.5, stroke = 0.75) +
+  geom_point(aes(fill = beta, colour = effect_sign),
+             alpha = 1, size = 0.2, stroke = 0.75, shape = 3) +
+  scale_colour_manual('Effect Sign', values = c('-' = 'firebrick4', '+' = 'steelblue4')) +
+  scale_fill_gradientn(colours = c('firebrick4', 'white', 'steelblue3'),
+                       values = rescale(c(-1, 0, 1)),
+                       limits = c(-1, 1),
+                       guide = 'none') + 
+  scale_shape_manual('Variant Type', values = c('INDEL' = 23, 'SNV' = 21)) +
+  scale_size_binned(bquote(bold(-log[10](p-value)))) +
+  facet_grid(rows = vars(type), scales = 'free', space = 'free') +
+  scale_x_continuous(breaks = c(0, 5000, 10000),
+                     labels = c('TSS', 5000, 10000)) +
+  theme_pub() +
+  labs(x = 'Position in rDNA unit', y = '') +
+  theme(strip.text.y = element_text(angle = 0),
+        legend.title = element_text(size = 13, face = 'bold'),
+        legend.text = element_text(size = 12),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.major.y = element_line(linewidth = 0.2, colour = 'grey90')) +
+  guides(
+    colour = guide_legend(override.aes = list(shape = 22, size = 5)),
+    shape = guide_legend(override.aes = list(size = 5)))
+```
+
+
+```{r}
+phesant_unrel_results_no_cancer_w1_g_p |> ggsave(
+  filename = file.path('..', 'figures', 'F3B.pdf'),
+  dpi = 900,
+  width = 16, height = 7.7)
+```
+
+
+```{r}
+phesant_unrel_results_no_cancer_w1_g_28s_p <- phesant_unrel_results_no_cancer_w1_g |>
+  filter(pos_ref >= 7921, pos_ref <= 12971) |>
+  mutate(var = paste0(pos_ref, ':', ref, '>', alt),
+         description = if_else(is.na(cases), description, 
+                               paste0(description, ' (N = ', cases, ')'))) |>
+  arrange(pos_ref, ref, alt, description) |>
+  mutate(INDEL = if_else(INDEL, 'INDEL', 'SNV')) |>
+  mutate(effect_sign = if_else(sign(beta) < 0, '-', '+')) |>
+  mutate(var = fct_inorder(var)) |>
+  ggplot(aes(x = var, y = description)) +
+  geom_point(aes(shape = INDEL, fill = beta, colour = effect_sign,
+                 size = lpval),
+             alpha = 0.5, stroke = 0.75) +
+  geom_point(aes(fill = beta, colour = effect_sign),
+             alpha = 1, size = 0.2, stroke = 0.75, shape = 3) +
+  scale_colour_manual('Effect Sign', values = c('-' = 'firebrick4', '+' = 'steelblue4')) +
+  scale_fill_gradientn(colours = c('firebrick4', 'white', 'steelblue3'),
+                       values = rescale(c(-1, 0, 1)),
+                       limits = c(-1, 1),
+                       guide = 'none') + 
+  scale_shape_manual('Variant Type', values = c('INDEL' = 23, 'SNV' = 21)) +
+  scale_size_binned(bquote(bold(-log[10](p-value)))) +
+  facet_grid(rows = vars(type), scales = 'free', space = 'free') +
+  theme_pub() +
+  labs(x = '', y = '') +
+  theme(strip.text.y = element_text(angle = 0),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.title = element_text(size = 13, face = 'bold'),
+        legend.text = element_text(size = 12),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.major.y = element_line(linewidth = 0.2, colour = 'grey90')) +
+  guides(
+    colour = guide_legend(override.aes = list(shape = 22, size = 5)),
+    shape = guide_legend(override.aes = list(size = 5))
+  )
+```
+
+```{r}
+phesant_unrel_results_no_cancer_w1_g_28s_p |> ggsave(
+  filename = file.path('..', 'figures', 'F3C.pdf'),
+  dpi = 300,
+  width = 16, height = 8)
+```

@@ -1,0 +1,347 @@
+---
+title: "Control for the impact of total CN in allelic associations"
+---
+
+```{r}
+library(tidyverse)
+```
+
+## Sequence variation
+
+```{r}
+phesant_fdr <- read_csv(
+  file.path(root_fd, '02_analysis', 'data', 
+            '03_phesant_new_1st', 'variant_level_fdr.csv'),
+  col_types = cols())
+```
+
+```{r}
+traits_fdr <- phesant_fdr |> 
+  select(ID, description) |> 
+  distinct() |>
+  mutate(trait = paste0('x', ID, '_0_0'))  |> 
+  mutate(type = case_when(
+    grepl('Cancer|cancer', description)  ~  'CANCER',
+    grepl('height|weight|Waist|Weight', description) ~  'BODY SIZE',
+    grepl('count|crit|volume|cyte|phill|Platelet', description) ~  'BLOOD COUNT',
+    grepl('first reported|glasses', description) ~  'NON-CANCER\nCONDITIONS',
+    TRUE ~  'BLOOD BIOCHEM.'))
+```
+
+## Regression models
+
+### No CN
+
+```{r}
+lin_associations <- read_csv(
+  file.path(
+    root_fd, '02_analysis', 'data', 
+    '05_phesant_analysis', 'lin_associations.csv'),
+  col_types = cols()) |>
+  rename(trait = term, term = variable) |>
+  inner_join(traits_fdr,
+             by = c('trait')) |>
+  separate(variant, into = c('pos_ref', 'alleles'), remove = F, sep = ':') |>
+  mutate(pos_ref = as.numeric(pos_ref)) |>
+  arrange(pos_ref, alleles, trait) |>
+  mutate(variant = fct_inorder(variant)) |>
+  mutate(description = gsub('phill', 'phil', description))
+```
+
+
+```{r}
+lin_associations_af_beta_hm <- lin_associations |>
+  filter(term == 'AF') |>
+  ggplot(aes(x = variant, y = description)) +
+  geom_tile(aes(fill = estimate, colour = lpval),
+            width=0.95, height=0.95, linewidth = 0.5) +
+  scale_fill_gradient2("Std. Beta", midpoint = 0, limits = c(-0.03, 0.03))  +
+  scale_colour_gradient2(bquote(bold(-log[10](p-value))),
+                         low = 'white', mid = 'grey95', high = 'black',
+                         midpoint = 4, limits = c(0, 15)) +
+  facet_grid(
+    rows = vars(type),
+    scales = 'free_y', space = 'free') +
+  theme_pub() +
+  labs(x = '', y = '') + 
+  theme(
+    legend.position = 'right',
+    panel.grid = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 13),
+    axis.text.y = element_text(size = 13),
+    axis.title = element_text(size = 15),
+    legend.title = element_text(size = 15, face = 'bold'),
+    legend.text = element_text(size = 13))
+```
+
+```{r}
+lin_associations_af_beta_hm |> ggsave(
+  filename = file.path('..', 'figures', 'FS07.png'),
+  height = 14, width = 20)
+```
+
+```{r}
+lin_associations_as_cn_beta_hm <- lin_associations |>
+  filter(term == 'AS_CN') |>
+  ggplot(aes(x = variant, y = description)) +
+  geom_tile(aes(fill = estimate, colour = lpval),
+            width=0.95, height=0.95, linewidth = 0.5) +
+  scale_fill_gradient2("Std. Beta", midpoint = 0, limits = c(-0.03, 0.03))  +
+  scale_colour_gradientn(bquote(bold(-log[10](p-value))),
+                         colours = c('white', 'grey90', 'black', 'black'),
+                         values = rescale(c(0,4,13,70)),
+                         guide = "colorbar", 
+                         limits = c(0,70)) +
+  facet_grid(
+    rows = vars(type),
+    scales = 'free_y', space = 'free') +
+  theme_pub() +
+  labs(x = '', y = '') + 
+  theme(
+    legend.position = 'right',
+    panel.grid = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 13),
+    axis.text.y = element_text(size = 13),
+    axis.title = element_text(size = 15),
+    legend.title = element_text(size = 15, face = 'bold'),
+    legend.text = element_text(size = 13))
+```
+
+```{r}
+lin_associations_as_cn_beta_hm |> ggsave(
+  filename = file.path('..', 'figures', 'FS08.png'),
+  height = 14, width = 20)
+```
+
+```{r}
+lin_associations_examples <- lin_associations |> 
+  filter((variant == '11408:G>A' & 
+            description == 'Neutrophil count') |
+         (variant == '11738:A>C' & 
+            description == 'Immature reticulocyte fraction')  )
+```
+
+```{r}
+lin_associations_examples_beta_p <- lin_associations_examples |>
+  arrange(variant) |>
+  mutate(description = fct_rev(
+    paste0(variant, ' v. UKB field ID ', ID, ' (', description,  ')')),
+    term = fct_rev(term)) |>
+  ggplot(aes(x = estimate, xmin = conf.low, xmax = conf.high, y = description)) +
+  geom_vline(xintercept = 0, linewidth = 0.5, colour = 'grey80') +
+  geom_crossbar(aes(colour = term, group = term), width = 0.4,
+                fill = 'grey90', linewidth = 1, fatten = 1, alpha = 0.5,
+                position = position_dodge(width = 0.5)) +
+  geom_point(aes(shape = term, fill = term, group = term),
+             alpha = 0.8, size = 2,
+             position = position_dodge(width = 0.5)) +
+  facet_grid(rows = vars(type), scales = 'free_y', space = 'free') +
+  labs(y = '', x = 'Standardised Beta, 95% CI') +
+  scale_x_continuous(
+    limits = c(-0.022, 0.022),
+    breaks = c(-0.02, -0.01, 0, 0.01, 0.02)) +
+  scale_colour_manual(
+    'Variable', values = c('tan', 'slategray2')) +
+  scale_fill_manual(
+    'Variable',values = c('tan', 'slategray2')) +
+  scale_shape_manual('Variable', values = c(21, 23)) +
+  theme_pub() +
+  theme(legend.title = element_text(face = 'bold',
+                                    size = 12),
+        legend.text = element_text(size = 11),
+        legend.position = 'bottom',
+        legend.spacing.y = unit(0.3, 'lines'),
+        strip.text = element_blank(),
+        panel.grid = element_blank(),
+        axis.title = element_text(face = 'bold')) +
+  guides(
+    colour = guide_legend(reverse = T),
+    fill = guide_legend(reverse = T),
+    shape = guide_legend(reverse = T)
+  )
+```
+
+```{r}
+lin_associations_examples_beta_p |>
+  ggsave(
+    filename = file.path('..', 'figures', 'F4B_betas.png'),
+    height = 3.5, width = 10, dpi = 300)
+```
+
+
+```{r}
+lin_associations_examples_pval_p <- lin_associations_examples |>
+  arrange(variant) |>
+  mutate(description = fct_rev(
+    paste0(variant, ' v. UKB field ID ', ID, ' (', description,  ')')),
+    term = fct_rev(term)) |>
+  ggplot(aes(x = lpval, xmin = conf.low, xmax = conf.high, y = description)) +
+  geom_col(aes(fill = term, colour = term, group = term),
+             alpha = 0.8, linewidth = 1.1, width = 0.4,
+             position = position_dodge(width = 0.5)) +
+  facet_grid(rows = vars(type), scales = 'free_y', space = 'free') +
+  labs(y = '', x = bquote(bold(-log[10](p-value)))) +
+  scale_x_continuous(limits = c(0, 11),
+                     breaks = c(0, 5, 10)) +
+  scale_colour_manual(
+    'Variable', values = c('tan', 'slategray2')) +
+  scale_fill_manual(
+    'Variable',values = c('tan', 'slategray2')) +
+  scale_shape_manual('Variable', values = c(21, 23)) +
+  theme_pub() +
+  theme(legend.title = element_text(face = 'bold',
+                                    size = 12),
+        legend.text = element_text(size = 12),
+        legend.position = 'bottom',
+        legend.spacing.y = unit(0.3, 'lines'),
+        strip.text = element_blank(),
+        panel.grid = element_blank(),
+        axis.title = element_text(face = 'bold'),
+        axis.ticks.y = element_blank()) +
+  guides(
+    colour = guide_legend(reverse = T),
+    fill = guide_legend(reverse = T),
+    shape = guide_legend(reverse = T)
+  )
+```
+
+```{r}
+lin_associations_examples_pval_p |>
+  ggsave(
+    filename = file.path('..', 'figures', 'F4B_fdr.png'),
+    height = 3.5, width = 9, dpi = 300)
+```
+
+
+### CN as Covariate
+
+```{r}
+lin_associations_cn <- read_csv(
+  file.path(
+    root_fd, '02_analysis', 'data', 
+    '05_phesant_analysis', 'lin_associations_af_cn.csv'),
+  col_types = cols()) |>
+  inner_join(traits_fdr,
+             by = c('trait')) |>
+  separate(variant, into = c('pos_ref', 'alleles'), remove = F, sep = ':') |>
+  mutate(pos_ref = as.numeric(pos_ref)) |>
+  arrange(pos_ref, alleles, term) |>
+  mutate(variant = fct_inorder(variant)) |>
+  mutate(description = gsub('phill', 'phil', description))
+```
+
+```{r}
+lin_associations_cn_diff <- lin_associations |> 
+  inner_join(lin_associations_cn, 
+             by = c('variant', 'pos_ref', 'alleles', 'term', 
+                    'trait', 'description', 'type', 'ID'),
+             suffix = c('', '_cn')) |>
+    mutate(diff_beta = (abs(estimate_cn) - abs(estimate))) |> 
+  select(variant, description, type, estimate, estimate_cn, diff_beta) 
+```
+
+```{r}
+comparison_cn_cov_beta_p <- lin_associations_cn_diff |> 
+  separate(variant, into = c('pos_ref', 'alleles'), sep = ':', remove = FALSE) |>
+  mutate(pos_ref = as.numeric(pos_ref)) |>
+  filter(pos_ref >= 10065, pos_ref <= 10104) |>
+  filter(type == 'BODY SIZE') |>
+  rename(Trait = description) |>
+  ggplot(aes(x = estimate, y = estimate_cn)) +
+  ggstar::geom_star(
+    aes(fill = variant, starshape = Trait),
+             size = 3, alpha = 0.5) +
+  ggstar::scale_starshape_manual(values = c(13, 15, 11, 23, 28, 5)) +
+  scale_fill_brewer('ES15L Variant', palette = 'Blues') +
+  ggpubr::stat_cor(size = 5, 
+                   aes(label = cor_format(after_stat(r), after_stat(p)))) +
+  lims(x = c(-0.0115, 0.0115),
+       y = c(-0.0115, 0.0115)) +
+  labs(x = 'Std. Beta without Total CN as Covariate',
+       y = 'Std. Beta with Total CN as Covariate') +
+  theme_pub() +
+  theme(aspect.ratio = 1,
+        panel.grid = element_blank(),
+        panel.border = element_rect(linewidth = 1.1),
+        axis.text = element_text(size = 13),
+        axis.title = element_text(size = 14),
+        legend.title = element_text(face = 'bold', size = 13),
+        legend.text = element_text(size = 12)) + 
+  guides(fill = guide_legend( 
+    override.aes = list(starshape = 13)))
+```
+
+```{r}
+comparison_cn_cov_beta_p |> ggsave(
+  filename = file.path('..', 'figures', 'F4C_betas.png'),
+  height = 6, width = 8)
+```
+
+
+
+```{r}
+comparison_cn_cov_pval_p <- lin_associations |> 
+    inner_join(lin_associations_cn, 
+               by = c('variant', 'pos_ref', 'alleles', 'term', 
+                      'trait', 'description', 'type', 'ID'),
+               suffix = c('', '_cn')) |>
+    filter(pos_ref >= 10065, pos_ref <= 10104, type == 'BODY SIZE') |>
+  select(variant, description, contains('lpval')) |>
+  rename(Trait = description) |>
+  ggplot(aes(x = lpval, y = lpval_cn)) +
+  ggstar::geom_star(
+    aes(fill = variant, starshape = Trait),
+             size = 3, alpha = 0.5) +
+  ggstar::scale_starshape_manual(values = c(13, 15, 11, 23, 28, 5)) +
+  scale_fill_brewer('ES15L Variant', palette = 'Blues') +
+  ggpubr::stat_cor(size = 5, 
+                   aes(label = cor_format(..r.., ..p..))) +
+  labs(x = bquote(bold(-log[10](p-value)~without~Total~CN~as~Covariate)),
+       y = bquote(bold(-log[10](p-value)~with~Total~CN~as~Covariate))) +
+  lims(x = c(0, 15),
+       y = c(0, 15)) +
+  theme_pub() +
+  theme(aspect.ratio = 1,
+        panel.grid = element_blank(),
+        panel.border = element_rect(linewidth = 1.1),
+        axis.text = element_text(size = 13),
+        axis.title = element_text(size = 14),
+        legend.title = element_text(face = 'bold', size = 13),
+        legend.text = element_text(size = 12)) + 
+  guides(fill = guide_legend( 
+    override.aes = list(starshape = 13)))
+```
+
+```{r}
+comparison_cn_cov_pval_p |> ggsave(
+  filename = file.path('..', 'figures', 'F4C_pval.png'),
+  height = 6, width = 8)
+```
+
+
+```{r}
+lin_associations_cn_beta_diff_hm <- lin_associations_cn_diff |>
+  ggplot(aes(x = variant, y = description)) +
+  geom_raster(aes(fill = diff_beta)) +
+  scale_fill_gradient2("Diff. Abs.\nStd. Beta", 
+                       midpoint = 0, limits = c(-0.03, 0.03)) +
+  facet_grid(
+    rows = vars(type),
+    scales = 'free_y', space = 'free') +
+  theme_pub() +
+  labs(x = '', y = '') + 
+  theme(
+    legend.position = 'right',
+    panel.grid = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 13),
+    axis.text.y = element_text(size = 13),
+    axis.title = element_text(size = 15),
+    legend.title = element_text(size = 15, face = 'bold'),
+    legend.text = element_text(size = 13))
+```
+
+```{r}
+lin_associations_cn_beta_diff_hm |> ggsave(
+  filename = file.path('..', 'figures', 'FS09.png'),
+  height = 14, width = 19)
+```

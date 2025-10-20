@@ -1,0 +1,1145 @@
+---
+title: "Comparison of rDNA references for realignment on MZ Twins"
+---
+  
+```{r}
+library(tidyverse)
+source('../setup.R')
+```
+
+
+## Auxiliary functions
+
+```{r}
+adjust_pos <- function(pos, loop_size=2120) {
+  if_else(pos<=loop_size, pos-loop_size-1, pos-loop_size)
+}
+```
+
+```{r}
+read_lofreq <- function(fd, fn='snps', loop_size=2120) {
+  bind_rows(
+    lapply(
+      X=list.files(fd),
+      FUN=function(x) { 
+        if(!file.exists(
+          file.path(fd, x, paste0(x, ".", fn, ".vcf")))) return(NULL)
+        read_tsv(
+          file.path(fd, x, paste0(x, ".", fn, ".vcf")), 
+          comment = "#",
+          col_names=F,
+          col_types=cols()) %>%
+          mutate(sample=x)})) %>%
+    select(sample, pos=X2, ref=X4, alt=X5, info=X8) %>%
+    separate(info, into=c('dp', 'af'), sep=';', extra='drop') %>%
+    mutate(af=as.numeric(gsub('AF=', '', af)),
+           dp=as.numeric(gsub('DP=', '', dp))) %>%
+    mutate(pos_ref=adjust_pos(pos, loop_size=loop_size))
+}
+```
+
+```{r}
+compare_twins_af_var <- function(df, the_var = variants[1]) {
+  df_aux <- df |> filter(var == the_var)
+  if(nrow(df_aux) < 3) return(NULL)
+  cor.test(df_aux$af_1, df_aux$af_2) |>
+    broom::tidy() |>
+    mutate(
+      Variant = the_var,
+      N = nrow(df_aux)) |>
+    relocate(Variant, N)}
+```
+
+## Relative pairs
+
+```{r}
+relatives <- read_csv(file.path(root_fd, '..', 'data', 'pheno', 'ukb_rel_dist.csv'), 
+                      col_types = cols())
+```
+
+```{r}
+twins <- relatives |> 
+  filter(grepl('MZ', dist)) |>
+  select(relation, eid_1 = ID1, eid_2 = ID2)
+```
+
+```{r}
+ukb_demo_wb <- read_csv(file.path(root_fd, '..', 'data', 'pheno', 'ukb_demo.csv'),
+                     col_types = cols()) |>
+  filter(Eth_Back == 1001)
+```
+
+```{r}
+twins_wb <- twins |> filter(
+  eid_1 %in% ukb_demo_wb$eid,
+  eid_2 %in% ukb_demo_wb$eid)
+```
+
+```{r}
+twins_wb_eids <- c(twins_wb$eid_1, twins_wb$eid_2)
+```
+
+
+## Full realignment to our tailored Hg38 + rDNA
+
+### First Sequencing Release
+
+### deCODE 1 + Sanger 1
+
+```{r}
+ifd_s1_s1 <- file.path(
+  root_fd, '01_validation', 'data', '01_realigned_variants',
+  '01_bt2_hg38' , 'twins', 's1_s1')
+ifd_d1_d1 <- file.path(
+  root_fd, '01_validation', 'data', '01_realigned_variants',
+  '01_bt2_hg38' , 'twins', 'd1_d1')
+```
+
+```{r}
+twins_s1_s1_many_vars <- read_lofreq(ifd_s1_s1, 'many')
+twins_d1_d1_many_vars <- read_lofreq(ifd_d1_d1, 'many')
+```
+
+```{r}
+twins_s1_s1_unfilt_vars <- read_lofreq(ifd_s1_s1, 'unfilt')
+twins_d1_d1_unfilt_vars <- read_lofreq(ifd_d1_d1, 'unfilt')
+```
+
+```{r}
+twins_s1_s1_hc_vars <- read_lofreq(ifd_s1_s1, 'hc')
+twins_d1_d1_hc_vars <- read_lofreq(ifd_d1_d1, 'hc')
+```
+
+
+```{r}
+twins_ds1_ds1_unfilt_vars <- bind_rows(
+  twins_d1_d1_unfilt_vars |> mutate(SC = 'deCODE'),
+  twins_s1_s1_unfilt_vars |> mutate(SC = 'Sanger'))
+```
+
+```{r}
+twins_ds1_ds1_hc_vars <- bind_rows(
+  twins_d1_d1_hc_vars |> mutate(SC = 'deCODE'),
+  twins_s1_s1_hc_vars |> mutate(SC = 'Sanger'))
+```
+
+```{r}
+twins_ds1_ds1_hc_vars_distinct <- twins_ds1_ds1_hc_vars |>
+  select(pos_ref, ref, alt) |> distinct() |>
+  arrange(pos_ref, ref, alt) |>
+  mutate(var = paste(pos_ref, ref, alt, sep = '_'))
+```
+
+```{r}
+twins_ds1_ds1_afs <- twins_ds1_ds1_unfilt_vars |> 
+  inner_join(twins_ds1_ds1_hc_vars_distinct,
+             by = c('pos_ref', 'ref', 'alt')) |>
+  mutate(eid = as.numeric(sample)) |>
+  select(-c(sample, pos)) |>
+  relocate(eid)
+```
+
+```{r}
+twins_ds1_ds1_hc_vars_list <- twins_ds1_ds1_hc_vars_distinct |> pull(var)
+```
+
+### Second Sequencing Release
+
+```{r}
+ifd_s2_s2 <- file.path(
+  root_fd, '01_validation', 'data', '01_realigned_variants',
+  '01_bt2_hg38' , 'twins', 's2_s2')
+ifd_d2_d2 <- file.path(
+  root_fd, '01_validation', 'data', '01_realigned_variants',
+  '01_bt2_hg38' , 'twins', 'd2_d2')
+```
+
+```{r}
+twins_d2_d2_many_vars <- read_lofreq(ifd_d2_d2, 'many')
+twins_s2_s2_many_vars <- read_lofreq(ifd_s2_s2, 'many')
+```
+
+```{r}
+twins_d2_d2_unfilt_vars <- read_lofreq(ifd_d2_d2, 'unfilt')
+twins_s2_s2_unfilt_vars <- read_lofreq(ifd_s2_s2, 'unfilt')
+```
+
+```{r}
+twins_d2_d2_hc_vars <- read_lofreq(ifd_d2_d2, 'hc')
+twins_s2_s2_hc_vars <- read_lofreq(ifd_s2_s2, 'hc')
+```
+
+```{r}
+twins_ds2_ds2_unfilt_vars <- bind_rows(
+  twins_d2_d2_unfilt_vars |> mutate(SC = 'deCODE'),
+  twins_s2_s2_unfilt_vars |> mutate(SC = 'Sanger'))
+```
+
+```{r}
+twins_ds2_ds2_hc_vars <- bind_rows(
+  twins_d2_d2_hc_vars |> mutate(SC = 'deCODE'),
+  twins_s2_s2_hc_vars |> mutate(SC = 'Sanger'))
+```
+
+```{r}
+twins_ds2_ds2_hc_vars_distinct <- twins_ds2_ds2_hc_vars |>
+  select(pos_ref, ref, alt) |> distinct() |>
+  arrange(pos_ref, ref, alt) |>
+  mutate(var = paste(pos_ref, ref, alt, sep = '_'))
+```
+
+```{r}
+twins_ds2_ds2_afs <- twins_ds2_ds2_unfilt_vars |> 
+  inner_join(twins_ds2_ds2_hc_vars_distinct,
+             by = c('pos_ref', 'ref', 'alt')) |>
+  mutate(eid = as.numeric(sample)) |>
+  select(-c(sample, pos)) |>
+  relocate(eid)
+```
+
+```{r}
+twins_ds2_ds2_hc_vars_list <- twins_ds2_ds2_hc_vars_distinct |> pull(var)
+```
+
+
+#### Combine First and Second release
+
+```{r}
+twins_hc_vars_distinct <- bind_rows(
+  twins_ds1_ds1_hc_vars_distinct,
+  twins_ds2_ds2_hc_vars_distinct) |>
+  arrange(pos_ref, ref, alt) |>
+  distinct()
+```
+
+```{r}
+twins_afs <- bind_rows(
+  twins_ds1_ds1_unfilt_vars,
+  twins_ds2_ds2_unfilt_vars) |> 
+  inner_join(twins_hc_vars_distinct,
+             by = c('pos_ref', 'ref', 'alt')) |>
+  mutate(eid = as.numeric(sample)) |>
+  select(-c(sample, pos)) |>
+  relocate(eid) |>
+  arrange(pos_ref, ref, alt)
+```
+
+```{r}
+twins_hc_vars_list <- twins_hc_vars_distinct |> pull(var)
+```
+
+```{r}
+summary_01_af <-  twins_afs |> group_by(pos_ref, ref, alt) |>
+      summarise(dp_mean = mean(dp), dp_median = median(dp),
+                dp_low = min(dp), dp_high = max(dp),
+                af_mean = mean(dp), af_median = median(af),
+                af_low = min(af), af_high = max(af),
+                .groups = 'drop')
+```
+
+## Full realignment to looped KY962518.1
+
+### First Release
+
+
+```{r}
+ifd_s1_s1_05 <- file.path(
+  root_fd, '01_validation', 'data', '01_realigned_variants',
+  '05_bt2_ky' , 'twins', 's1_s1')
+ifd_d1_d1_05 <- file.path(
+  root_fd, '01_validation', 'data', '01_realigned_variants',
+  '05_bt2_ky' , 'twins', 'd1_d1')
+```
+
+
+```{r}
+twins_d1_d1_05_many_vars <- read_lofreq(ifd_d1_d1_05, 'many')
+twins_s1_s1_05_many_vars <- read_lofreq(ifd_s1_s1_05, 'many')
+```
+
+```{r}
+twins_d1_d1_05_unfilt_vars <- read_lofreq(
+  ifd_d1_d1_05, 'unfilt')
+twins_s1_s1_05_unfilt_vars <- read_lofreq(
+  ifd_s1_s1_05, 'unfilt')
+```
+
+```{r}
+twins_d1_d1_05_hc_vars <- read_lofreq(
+  ifd_d1_d1_05, 'hc')
+twins_s1_s1_05_hc_vars <- read_lofreq(
+  ifd_s1_s1_05, 'hc')
+```
+
+```{r}
+twins_ds1_ds1_05_unfilt_vars <- bind_rows(
+  twins_d1_d1_05_unfilt_vars |> mutate(SC = 'deCODE'),
+  twins_s1_s1_05_unfilt_vars |> mutate(SC = 'Sanger'))
+```
+
+```{r}
+twins_ds1_ds1_05_hc_vars <- bind_rows(
+  twins_d1_d1_05_hc_vars |> mutate(SC = 'deCODE'),
+  twins_s1_s1_05_hc_vars |> mutate(SC = 'Sanger'))
+```
+
+```{r}
+twins_ds1_ds1_05_hc_vars_distinct <- twins_ds1_ds1_05_hc_vars |>
+  select(pos_ref, ref, alt) |> distinct() |>
+  arrange(pos_ref, ref, alt) |>
+  mutate(var = paste(pos_ref, ref, alt, sep = '_'))
+```
+
+```{r}
+twins_ds1_ds1_05_afs <- twins_ds1_ds1_05_unfilt_vars |> 
+  inner_join(twins_ds1_ds1_05_hc_vars_distinct,
+             by = c('pos_ref', 'ref', 'alt')) |>
+  mutate(eid = as.numeric(sample)) |>
+  select(-c(sample, pos)) |>
+  relocate(eid)
+```
+
+```{r}
+twins_ds1_ds1_05_hc_vars_list <- twins_ds1_ds1_05_hc_vars_distinct |> pull(var)
+```
+
+### Second Release
+
+```{r}
+ifd_s2_s2_05 <- file.path(
+  root_fd, '01_validation', 'data', '01_realigned_variants',
+  '05_bt2_ky' , 'twins', 's2_s2')
+ifd_d2_d2_05 <- file.path(
+  root_fd, '01_validation', 'data', '01_realigned_variants',
+  '05_bt2_ky' , 'twins', 'd2_d2')
+```
+
+```{r}
+twins_d2_d2_05_many_vars <- read_lofreq(ifd_d2_d2_05, 'many')
+twins_s2_s2_05_many_vars <- read_lofreq(ifd_s2_s2_05, 'many')
+```
+
+```{r}
+twins_d2_d2_05_unfilt_vars <- read_lofreq(
+  ifd_d2_d2_05, 'unfilt')
+twins_s2_s2_05_unfilt_vars <- read_lofreq(
+  ifd_s2_s2_05, 'unfilt')
+```
+
+```{r}
+twins_d2_d2_05_hc_vars <- read_lofreq(
+  ifd_d2_d2_05, 'hc')
+twins_s2_s2_05_hc_vars <- read_lofreq(
+  ifd_s2_s2_05, 'hc')
+```
+
+```{r}
+twins_ds2_ds2_05_unfilt_vars <- bind_rows(
+  twins_d2_d2_05_unfilt_vars |> mutate(SC = 'deCODE'),
+  twins_s2_s2_05_unfilt_vars |> mutate(SC = 'Sanger'))
+```
+
+```{r}
+twins_ds2_ds2_05_hc_vars <- bind_rows(
+  twins_d2_d2_05_hc_vars |> mutate(SC = 'deCODE'),
+  twins_s2_s2_05_hc_vars |> mutate(SC = 'Sanger'))
+```
+
+```{r}
+twins_ds2_ds2_05_hc_vars_distinct <- twins_ds2_ds2_05_hc_vars |>
+  select(pos_ref, ref, alt) |> distinct() |>
+  arrange(pos_ref, ref, alt) |>
+  mutate(var = paste(pos_ref, ref, alt, sep = '_'))
+```
+
+```{r}
+twins_ds2_ds2_05_afs <- twins_ds2_ds2_05_unfilt_vars |> 
+  inner_join(twins_ds2_ds2_05_hc_vars_distinct,
+             by = c('pos_ref', 'ref', 'alt')) |>
+  mutate(eid = as.numeric(sample)) |>
+  select(-c(sample, pos)) |>
+  relocate(eid)
+```
+
+```{r}
+twins_ds2_ds2_05_hc_vars_list <- twins_ds2_ds2_05_hc_vars_distinct |> pull(var)
+```
+
+### Combine First and Second release
+
+```{r}
+twins_05_hc_vars_distinct <- bind_rows(
+  twins_ds1_ds1_05_hc_vars_distinct,
+  twins_ds2_ds2_05_hc_vars_distinct) |>
+  arrange(pos_ref, ref, alt) |>
+  distinct()
+```
+
+```{r}
+twins_05_afs <- bind_rows(
+  twins_ds1_ds1_05_unfilt_vars,
+  twins_ds2_ds2_05_unfilt_vars) |> 
+  inner_join(twins_05_hc_vars_distinct,
+             by = c('pos_ref', 'ref', 'alt')) |>
+  mutate(eid = as.numeric(sample)) |>
+  select(-c(sample, pos)) |>
+  relocate(eid) |>
+  arrange(pos_ref, ref, alt)
+```
+
+```{r}
+twins_05_hc_vars_list <- twins_hc_vars_distinct |> pull(var)
+```
+
+
+#### Summary
+
+```{r}
+summary_05_af <-  twins_05_afs |> group_by(pos_ref, ref, alt) |>
+      summarise(dp_mean = mean(dp), dp_median = median(dp),
+                dp_low = min(dp), dp_high = max(dp),
+                af_mean = mean(dp), af_median = median(af),
+                af_low = min(af), af_high = max(af),
+                .groups = 'drop')
+```
+
+## Comparison of approaches
+
+### 01 vs 05
+
+```{r}
+summary_01_05_af <- full_join(
+  summary_01_af,
+  summary_05_af,
+  by = c('pos_ref', 'ref', 'alt'), suffix = c('_01', '_05')) |>
+  arrange(pos_ref, ref, alt) |>
+  select(pos_ref, ref, alt, 
+         starts_with('af_median'))
+```
+
+```{r}
+summary_01_05_af |>
+  mutate(imputed = (is.na(af_median_01) | is.na(af_median_05))) |>
+  replace_na(list(af_median_01 = 0, af_median_05 = 0)) |>
+  ggplot(aes(x = af_median_01, y = af_median_05)) +
+  geom_point(aes(fill = imputed), alpha = 0.5, shape = 21) +
+  ggpubr::stat_cor(
+    aes(label = cor_format(after_stat(r), after_stat(p)))) +
+  scale_fill_manual(values = c('FALSE' = 'grey40', 'TRUE' = 'firebrick')) +
+  theme_bw() +
+  labs(x = "Median Variant Frequency in tailored Hg38+rDNA",
+       y = "Median Variant Frequency in rDNA only") +
+  theme_pub() +
+  theme(
+    aspect.ratio = 1,
+    legend.position = 'none',
+    panel.grid = element_blank(),
+    panel.border = element_rect(linewidth = 1.1),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 13))
+```
+
+
+## Rescue of frequencies
+
+```{r}
+vars_05 <- twins_05_hc_vars_distinct |>
+  select(pos_ref, ref, alt) |>
+  distinct()
+```
+
+```{r}
+afs_many_05 <- bind_rows(
+  twins_d1_d1_05_many_vars |> mutate(release = 'd1'),
+  twins_s1_s1_05_many_vars |> mutate(release = 's1'),
+  twins_d2_d2_05_many_vars |> mutate(release = 'd2'),
+  twins_s2_s2_05_many_vars |> mutate(release = 's2')) |>
+    inner_join(vars_05, by = c('pos_ref', 'ref', 'alt')) |>
+  mutate(eid = as.numeric(sample)) |>
+  select(-sample) |>
+  mutate(var = paste(pos_ref, ref, alt, sep = '_'))
+```
+
+```{r}
+twins_05_afs_many <- twins |>
+  inner_join(afs_many_05,
+             by = c('eid_1' = 'eid')) |>
+  inner_join(afs_many_05,
+             by = c('eid_2' = 'eid', 'pos_ref', 'ref', 'alt', 'var'),
+             suffix = c('_1', '_2')) |>
+  arrange(pos_ref, ref, alt) 
+```
+
+```{r}
+twins_05_afs_many |>
+    ggplot(aes(x = af_1, y = af_2)) +
+    geom_point(alpha = 0.5) +
+    ggpubr::stat_cor(size = 2) +
+    labs(x = 'Allele Frequency in Twin 1',
+         y = 'Allele Frequency in Twin 2') +
+  facet_grid(cols = vars(release_1)) +
+    theme_bw() +
+    theme(panel.grid = element_blank(),
+          aspect.ratio = 1)
+```
+
+
+## Full realignment to Paralkar's Lab Hg38 + rDNA
+
+### deCODE 2 vs deCODE 2
+
+
+```{r}
+ifd_d2_d2_03 <- file.path(
+  root_fd, '01_validation', 'data', '01_realigned_variants',
+  '05_bt2_hg38_paralkar' , 'twins', 'd2_d2')
+```
+
+
+```{r}
+twins_d2_d2_03_many_vars <- read_lofreq(ifd_d2_d2_03, 'many', 
+                                        loop_size = (44838 - 35500))
+```
+
+```{r}
+twins_d2_d2_03_unfilt_vars <- read_lofreq(
+  ifd_d2_d2_03, 'unfilt', loop_size = (44838 - 35500))
+```
+
+```{r}
+twins_d2_d2_03_hc_vars <- read_lofreq(
+  ifd_d2_d2_03, 'hc', loop_size = (44838 - 35500))
+```
+
+```{r}
+twins_d2_d2_03_hc_vars_distinct <- twins_d2_d2_03_hc_vars |>
+  select(pos_ref, ref, alt) |> distinct() |>
+  arrange(pos_ref, ref, alt) |>
+  mutate(var = paste(pos_ref, ref, alt, sep = '_'))
+```
+
+```{r}
+twins_d2_d2_03_afs <- twins_d2_d2_03_unfilt_vars |> 
+  inner_join(twins_d2_d2_03_hc_vars_distinct,
+             by = c('pos_ref', 'ref', 'alt')) |>
+  mutate(eid = as.numeric(sample)) |>
+  select(-c(sample, pos)) |>
+  relocate(eid)
+```
+
+```{r}
+twins_d2_d2_03_hc_vars_list <- twins_d2_d2_03_hc_vars_distinct |> pull(var)
+```
+
+```{r}
+twins_d2_d2_03_real_afs_comp <- twins |>
+  inner_join(twins_d2_d2_03_afs,
+             by = c('eid_1' = 'eid')) |>
+  inner_join(twins_d2_d2_03_afs,
+             by = c('eid_2' = 'eid', 'pos_ref', 'ref', 'alt', 'var'),
+             suffix = c('_1', '_2')) |>
+  arrange(pos_ref, ref, alt) |>
+  mutate(var = forcats::fct_inorder(var))
+```
+
+```{r}
+twins_d2_d2_03_real_afs_comp |>
+    rename(variant = var) |>
+    group_by(variant) |>
+    filter(pos_ref == -424) |>
+    ungroup() |>
+    ggplot(aes(x = af_1, y = af_2)) +
+    geom_point(alpha = 0.5) +
+    ggpubr::stat_cor(size = 2) +
+    facet_wrap(. ~ variant, scales = 'free') +
+    labs(x = 'Allele Frequency in Twin 1',
+         y = 'Allele Frequency in Twin 2') +
+    theme_bw() +
+    theme(panel.grid = element_blank(),
+          aspect.ratio = 1)
+```
+
+
+```{r}
+twins_d2_d2_03_real_afs_cor <- bind_rows(
+  lapply(X = twins_d2_d2_03_hc_vars_list,
+         FUN = function(x) {
+           compare_twins_af_var(df = twins_d2_d2_03_real_afs_comp,
+                                the_var = x) }))
+```
+
+
+
+### Sanger 2 vs Sanger 2
+
+```{r}
+ifd_s2_s2_03 <- file.path(
+  root_fd, '01_validation', 'data', '01_realigned_variants',
+  '05_bt2_hg38_paralkar' , 'twins', 's2_s2')
+```
+
+```{r}
+twins_s2_s2_03_many_vars <- read_lofreq(ifd_s2_s2_03, 'many',
+                                        loop_size =  (44838 - 35500))
+```
+
+```{r}
+twins_s2_s2_03_unfilt_vars <- read_lofreq(
+  ifd_s2_s2_03, 'unfilt', loop_size = (44838 - 35500))
+```
+
+```{r}
+twins_s2_s2_03_hc_vars <- read_lofreq(
+  ifd_s2_s2_03, 'hc', loop_size = (44838 - 35500))
+```
+
+```{r}
+twins_s2_s2_03_hc_vars_distinct <- twins_s2_s2_03_hc_vars |>
+  select(pos_ref, ref, alt) |> distinct() |>
+  arrange(pos_ref, ref, alt) |>
+  mutate(var = paste(pos_ref, ref, alt, sep = '_'))
+```
+
+```{r}
+twins_s2_s2_03_afs <- twins_s2_s2_03_unfilt_vars |> 
+  inner_join(twins_s2_s2_03_hc_vars_distinct,
+             by = c('pos_ref', 'ref', 'alt')) |>
+  mutate(eid = as.numeric(sample)) |>
+  select(-c(sample, pos)) |>
+  relocate(eid)
+```
+
+```{r}
+twins_s2_s2_03_hc_vars_list <- twins_s2_s2_03_hc_vars_distinct |> pull(var)
+```
+
+```{r}
+twins_s2_s2_03_real_afs_comp <- twins |>
+  inner_join(twins_s2_s2_03_afs,
+             by = c('eid_1' = 'eid')) |>
+  inner_join(twins_s2_s2_03_afs,
+             by = c('eid_2' = 'eid', 'pos_ref', 'ref', 'alt', 'var'),
+             suffix = c('_1', '_2')) |>
+  arrange(pos_ref, ref, alt) |>
+  mutate(var = forcats::fct_inorder(var))
+```
+
+```{r}
+twins_s2_s2_03_real_afs_comp |>
+    rename(variant = var) |>
+    group_by(variant) |>
+    filter(pos_ref == -424) |>
+    ungroup() |>
+    ggplot(aes(x = af_1, y = af_2)) +
+    geom_point(alpha = 0.5) +
+    ggpubr::stat_cor(size = 2) +
+    facet_wrap(. ~ variant, scales = 'free') +
+    labs(x = 'Allele Frequency in Twin 1',
+         y = 'Allele Frequency in Twin 2') +
+    theme_bw() +
+    theme(panel.grid = element_blank(),
+          aspect.ratio = 1)
+```
+
+
+```{r}
+twins_s2_s2_03_real_afs_cor <- bind_rows(
+  lapply(X = twins_s2_s2_03_hc_vars_list,
+         FUN = function(x) {
+           compare_twins_af_var(df = twins_s2_s2_03_real_afs_comp,
+                                the_var = x) }))
+```
+
+
+### Combined deCODE 2 / Sanger 2
+
+```{r}
+twins_ds2_ds2_03_unfilt_vars <- bind_rows(
+  twins_d2_d2_03_unfilt_vars |> mutate(SC = 'deCODE'),
+  twins_s2_s2_03_unfilt_vars |> mutate(SC = 'Sanger'))
+```
+
+```{r}
+twins_ds2_ds2_03_hc_vars <- bind_rows(
+  twins_d2_d2_03_hc_vars |> mutate(SC = 'deCODE'),
+  twins_s2_s2_03_hc_vars |> mutate(SC = 'Sanger'))
+```
+
+```{r}
+twins_ds2_ds2_03_hc_vars_distinct <- twins_ds2_ds2_03_hc_vars |>
+  select(pos_ref, ref, alt) |> distinct() |>
+  arrange(pos_ref, ref, alt) |>
+  mutate(var = paste(pos_ref, ref, alt, sep = '_'))
+```
+
+```{r}
+twins_ds2_ds2_03_afs <- twins_ds2_ds2_03_unfilt_vars |> 
+  inner_join(twins_ds2_ds2_03_hc_vars_distinct,
+             by = c('pos_ref', 'ref', 'alt')) |>
+  mutate(eid = as.numeric(sample)) |>
+  select(-c(sample, pos)) |>
+  relocate(eid)
+```
+
+```{r}
+twins_ds2_ds2_03_hc_vars_list <- twins_ds2_ds2_03_hc_vars_distinct |> pull(var)
+```
+
+```{r}
+twins_ds2_ds2_03_real_afs_comp <- twins |>
+  inner_join(twins_ds2_ds2_03_afs,
+             by = c('eid_1' = 'eid')) |>
+  inner_join(twins_ds2_ds2_03_afs,
+             by = c('eid_2' = 'eid', 'pos_ref', 'ref', 'alt', 'var'),
+             suffix = c('_1', '_2')) |>
+  arrange(pos_ref, ref, alt) |>
+  mutate(var = forcats::fct_inorder(var))
+```
+
+```{r}
+twins_ds2_ds2_03_real_afs_comp |>
+    rename(variant = var) |>
+    group_by(variant) |>
+    filter(pos_ref == -424) |>
+    ungroup() |>
+    ggplot(aes(x = af_1, y = af_2)) +
+    geom_point(alpha = 0.5) +
+    ggpubr::stat_cor(size = 2) +
+    facet_wrap(. ~ variant, scales = 'free') +
+    labs(x = 'Allele Frequency in Twin 1',
+         y = 'Allele Frequency in Twin 2') +
+    theme_bw() +
+    theme(panel.grid = element_blank(),
+          aspect.ratio = 1)
+```
+
+```{r}
+twins_ds2_ds2_03_real_afs_cor <- bind_rows(
+  lapply(X = twins_ds2_ds2_03_hc_vars_list,
+         FUN = function(x) {
+           compare_twins_af_var(df = twins_ds2_ds2_03_real_afs_comp,
+                                the_var = x) }))
+```
+
+#### Summary
+
+```{r}
+summary_03 <- twins_ds2_ds2_03_real_afs_comp |>
+  group_by(pos_ref, ref, alt) |>
+  summarise(num_pairs = n_distinct(relation),
+            .groups = 'drop') |>
+  left_join(
+    twins_ds2_ds2_03_real_afs_cor |>
+      select(Variant, R = estimate) |>
+      separate(Variant, into = c('pos_ref', 'ref', 'alt'), sep = '_') |>
+      mutate(pos_ref = as.numeric(pos_ref)),
+    by = c('pos_ref', 'alt', 'ref')) |>
+  inner_join(
+    twins_ds2_ds2_03_afs |> group_by(pos_ref, ref, alt) |>
+      summarise(dp_mean = mean(dp), dp_median = median(dp),
+                dp_low = min(dp), dp_high = max(dp),
+                af_mean = mean(dp), af_median = median(af),
+                af_low = min(af), af_high = max(af),
+                .groups = 'drop'),
+    by = c('pos_ref', 'ref', 'alt'))
+```
+
+
+## Full realignment to our Paralkar's Lab T2T + rDNA
+
+### deCODE 2 vs deCODE 2
+
+```{r}
+ifd_d2_d2_04 <- file.path(
+  root_fd, '01_validation', 'data', '01_realigned_variants',
+  '04_bt2_t2t_paralkar' , 'twins', 'd2_d2')
+```
+
+```{r}
+twins_d2_d2_04_many_vars <- read_lofreq(ifd_d2_d2_03, 'many',
+                                        loop_size = (44838 - 35500))
+```
+
+```{r}
+twins_d2_d2_04_unfilt_vars <- read_lofreq(
+  ifd_d2_d2_04, 'unfilt', loop_size = (44838 - 35500))
+```
+
+```{r}
+twins_d2_d2_04_hc_vars <- read_lofreq(
+  ifd_d2_d2_04, 'hc', loop_size = (44838 - 35500))
+```
+
+```{r}
+twins_d2_d2_04_hc_vars_distinct <- twins_d2_d2_04_hc_vars |>
+  select(pos_ref, ref, alt) |> distinct() |>
+  arrange(pos_ref, ref, alt) |>
+  mutate(var = paste(pos_ref, ref, alt, sep = '_'))
+```
+
+```{r}
+twins_d2_d2_04_afs <- twins_d2_d2_04_unfilt_vars |> 
+  inner_join(twins_d2_d2_04_hc_vars_distinct,
+             by = c('pos_ref', 'ref', 'alt')) |>
+  mutate(eid = as.numeric(sample)) |>
+  select(-c(sample, pos)) |>
+  relocate(eid)
+```
+
+```{r}
+twins_d2_d2_04_hc_vars_list <- twins_d2_d2_04_hc_vars_distinct |> pull(var)
+```
+
+```{r}
+twins_d2_d2_04_real_afs_comp <- twins |>
+  inner_join(twins_d2_d2_04_afs,
+             by = c('eid_1' = 'eid')) |>
+  inner_join(twins_d2_d2_04_afs,
+             by = c('eid_2' = 'eid', 'pos_ref', 'ref', 'alt', 'var'),
+             suffix = c('_1', '_2')) |>
+  arrange(pos_ref, ref, alt) |>
+  mutate(var = forcats::fct_inorder(var))
+```
+
+```{r}
+twins_d2_d2_04_real_afs_comp |>
+    rename(variant = var) |>
+    group_by(variant) |>
+    filter(pos_ref == -424) |>
+    ungroup() |>
+    ggplot(aes(x = af_1, y = af_2)) +
+    geom_point(alpha = 0.5) +
+    ggpubr::stat_cor(size = 2) +
+    facet_wrap(. ~ variant, scales = 'free') +
+    labs(x = 'Allele Frequency in Twin 1',
+         y = 'Allele Frequency in Twin 2') +
+    theme_bw() +
+    theme(panel.grid = element_blank(),
+          aspect.ratio = 1)
+```
+
+
+```{r}
+twins_d2_d2_04_real_afs_cor <- bind_rows(
+  lapply(X = twins_d2_d2_04_hc_vars_list,
+         FUN = function(x) {
+           compare_twins_af_var(df = twins_d2_d2_04_real_afs_comp,
+                                the_var = x) }))
+```
+
+
+### Sanger 2 vs Sanger 2
+
+```{r}
+ifd_s2_s2_04 <- file.path(
+  root_fd, '01_validation', 'data', '01_realigned_variants',
+  '04_bt2_t2t_paralkar' , 'twins', 's2_s2')
+```
+
+```{r}
+twins_s2_s2_04_many_vars <- read_lofreq(ifd_s2_s2_04, 'many',
+                                        loop_size = (44838 - 35500) )
+```
+
+```{r}
+twins_s2_s2_04_unfilt_vars <- read_lofreq(
+  ifd_s2_s2_04, 'unfilt', loop_size = (44838 - 35500))
+```
+
+```{r}
+twins_s2_s2_04_hc_vars <- read_lofreq(
+  ifd_s2_s2_04, 'hc', loop_size = (44838 - 35500))
+```
+
+```{r}
+twins_s2_s2_04_hc_vars_distinct <- twins_s2_s2_04_hc_vars |>
+  select(pos_ref, ref, alt) |> distinct() |>
+  arrange(pos_ref, ref, alt) |>
+  mutate(var = paste(pos_ref, ref, alt, sep = '_'))
+```
+
+```{r}
+twins_s2_s2_04_afs <- twins_s2_s2_04_unfilt_vars |> 
+  inner_join(twins_s2_s2_04_hc_vars_distinct,
+             by = c('pos_ref', 'ref', 'alt')) |>
+  mutate(eid = as.numeric(sample)) |>
+  select(-c(sample, pos)) |>
+  relocate(eid)
+```
+
+```{r}
+twins_s2_s2_04_hc_vars_list <- twins_s2_s2_04_hc_vars_distinct |> pull(var)
+```
+
+```{r}
+twins_s2_s2_04_real_afs_comp <- twins |>
+  inner_join(twins_s2_s2_04_afs,
+             by = c('eid_1' = 'eid')) |>
+  inner_join(twins_s2_s2_04_afs,
+             by = c('eid_2' = 'eid', 'pos_ref', 'ref', 'alt', 'var'),
+             suffix = c('_1', '_2')) |>
+  arrange(pos_ref, ref, alt) |>
+  mutate(var = forcats::fct_inorder(var))
+```
+
+```{r}
+twins_s2_s2_04_real_afs_comp |>
+    rename(variant = var) |>
+    group_by(variant) |>
+    filter(pos_ref == -424) |>
+    ungroup() |>
+    ggplot(aes(x = af_1, y = af_2)) +
+    geom_point(alpha = 0.5) +
+    ggpubr::stat_cor(size = 2) +
+    facet_wrap(. ~ variant, scales = 'free') +
+    labs(x = 'Allele Frequency in Twin 1',
+         y = 'Allele Frequency in Twin 2') +
+    theme_bw() +
+    theme(panel.grid = element_blank(),
+          aspect.ratio = 1)
+```
+
+
+```{r}
+twins_s2_s2_04_real_afs_cor <- bind_rows(
+  lapply(X = twins_s2_s2_04_hc_vars_list,
+         FUN = function(x) {
+           compare_twins_af_var(df = twins_s2_s2_04_real_afs_comp,
+                                the_var = x) }))
+```
+
+
+
+### Combined deCODE 2 / Sanger 2
+
+```{r}
+twins_ds2_ds2_04_unfilt_vars <- bind_rows(
+  twins_d2_d2_04_unfilt_vars |> mutate(SC = 'deCODE'),
+  twins_s2_s2_04_unfilt_vars |> mutate(SC = 'Sanger'))
+```
+
+```{r}
+twins_ds2_ds2_04_hc_vars <- bind_rows(
+  twins_d2_d2_04_hc_vars |> mutate(SC = 'deCODE'),
+  twins_s2_s2_04_hc_vars |> mutate(SC = 'Sanger'))
+```
+
+```{r}
+twins_ds2_ds2_04_hc_vars_distinct <- twins_ds2_ds2_04_hc_vars |>
+  select(pos_ref, ref, alt) |> distinct() |>
+  arrange(pos_ref, ref, alt) |>
+  mutate(var = paste(pos_ref, ref, alt, sep = '_'))
+```
+
+```{r}
+twins_ds2_ds2_04_afs <- twins_ds2_ds2_04_unfilt_vars |> 
+  inner_join(twins_ds2_ds2_04_hc_vars_distinct,
+             by = c('pos_ref', 'ref', 'alt')) |>
+  mutate(eid = as.numeric(sample)) |>
+  select(-c(sample, pos)) |>
+  relocate(eid)
+```
+
+```{r}
+twins_ds2_ds2_04_hc_vars_list <- twins_ds2_ds2_04_hc_vars_distinct |> pull(var)
+```
+
+```{r}
+twins_ds2_ds2_04_real_afs_comp <- twins |>
+  inner_join(twins_ds2_ds2_04_afs,
+             by = c('eid_1' = 'eid')) |>
+  inner_join(twins_ds2_ds2_04_afs,
+             by = c('eid_2' = 'eid', 'pos_ref', 'ref', 'alt', 'var'),
+             suffix = c('_1', '_2')) |>
+  arrange(pos_ref, ref, alt) |>
+  mutate(var = forcats::fct_inorder(var))
+```
+
+```{r}
+twins_ds2_ds2_04_real_afs_comp |>
+    rename(variant = var) |>
+    group_by(variant) |>
+    filter(pos_ref == -424) |>
+    ungroup() |>
+    ggplot(aes(x = af_1, y = af_2)) +
+    geom_point(alpha = 0.5) +
+    ggpubr::stat_cor(size = 2) +
+    facet_wrap(. ~ variant, scales = 'free') +
+    labs(x = 'Allele Frequency in Twin 1',
+         y = 'Allele Frequency in Twin 2') +
+    theme_bw() +
+    theme(panel.grid = element_blank(),
+          aspect.ratio = 1)
+```
+
+```{r}
+twins_ds2_ds2_04_real_afs_cor <- bind_rows(
+  lapply(X = twins_ds2_ds2_04_hc_vars_list,
+         FUN = function(x) {
+           compare_twins_af_var(df = twins_ds2_ds2_04_real_afs_comp,
+                                the_var = x) }))
+```
+
+#### Summary
+
+```{r}
+summary_04 <- twins_ds2_ds2_04_real_afs_comp |>
+  group_by(pos_ref, ref, alt) |>
+  summarise(num_pairs = n_distinct(relation),
+            .groups = 'drop') |>
+  left_join(
+    twins_ds2_ds2_04_real_afs_cor |>
+      select(Variant, R = estimate) |>
+      separate(Variant, into = c('pos_ref', 'ref', 'alt'), sep = '_') |>
+      mutate(pos_ref = as.numeric(pos_ref)),
+    by = c('pos_ref', 'alt', 'ref')) |>
+  inner_join(
+    twins_ds2_ds2_04_afs |> group_by(pos_ref, ref, alt) |>
+      summarise(dp_mean = mean(dp), dp_median = median(dp),
+                dp_low = min(dp), dp_high = max(dp),
+                af_mean = mean(dp), af_median = median(af),
+                af_low = min(af), af_high = max(af),
+                .groups = 'drop'),
+    by = c('pos_ref', 'ref', 'alt'))
+```
+
+
+### 01 vs 03
+
+```{r}
+summary_01_03 <- full_join(
+  summary_01,
+  summary_03,
+  by = c('pos_ref', 'ref', 'alt'), suffix = c('_01', '_03')) |>
+  arrange(pos_ref, ref, alt) |>
+  select(pos_ref, ref, alt, 
+         starts_with('num_pairs'), 
+         starts_with('R_'),
+         starts_with('af_median'))
+```
+
+
+```{r}
+summary_01_03 |>
+  mutate(imputed = (is.na(R_01) | is.na(R_03))) |>
+  replace_na(list(R_01 = 0, R_03 = 0)) |>
+  ggplot(aes(x = R_01, y = R_03)) +
+  geom_point(aes(fill = imputed), alpha = 0.5, shape = 21) +
+  scale_fill_manual(values = c('FALSE' = 'grey40', 'TRUE' = 'firebrick')) +
+  theme_bw() +
+  labs(x = "Intra-twin Pearson's R in tailored Hg38+rDNA",
+       y = "Intra-twin Pearson's R in Paralkar's Hg38+rDNA") +
+  theme(
+    aspect.ratio = 1,
+    legend.position = 'none')
+```
+
+```{r}
+summary_01_03 |>
+  mutate(imputed = (is.na(af_median_01) | is.na(af_median_03))) |>
+  replace_na(list(af_median_01 = 0, af_median_03 = 0)) |>
+  ggplot(aes(x = af_median_01, y = af_median_03)) +
+  geom_point(aes(fill = imputed), alpha = 0.5, shape = 21) +
+  scale_fill_manual(values = c('FALSE' = 'grey40', 'TRUE' = 'firebrick')) +
+  theme_bw() +
+  labs(x = "Median Variant Frequency in tailored Hg38+rDNA",
+       y = "Median Variant Frequency in Paralkar's Hg38+rDNA") +
+  theme(
+    aspect.ratio = 1,
+    legend.position = 'none')
+```
+
+### 01 vs 04
+
+```{r}
+summary_01_04 <- full_join(
+  summary_01,
+  summary_04,
+  by = c('pos_ref', 'ref', 'alt'), suffix = c('_01', '_04')) |>
+  arrange(pos_ref, ref, alt) |>
+  select(pos_ref, ref, alt, 
+         starts_with('num_pairs'), 
+         starts_with('R_'),
+         starts_with('af_median'))
+```
+
+
+```{r}
+summary_01_04 |>
+  mutate(imputed = (is.na(R_01) | is.na(R_04))) |>
+  replace_na(list(R_01 = 0, R_04 = 0)) |>
+  ggplot(aes(x = R_01, y = R_04)) +
+  geom_point(aes(fill = imputed), alpha = 0.5, shape = 21) +
+  scale_fill_manual(values = c('FALSE' = 'grey40', 'TRUE' = 'firebrick')) +
+  theme_bw() +
+  labs(x = "Intra-twin Pearson's R in tailored Hg38+rDNA",
+       y = "Intra-twin Pearson's R in Paralkar's T2T+rDNA") +
+  theme(
+    aspect.ratio = 1,
+    legend.position = 'none')
+```
+
+```{r}
+summary_01_04 |>
+  mutate(imputed = (is.na(af_median_01) | is.na(af_median_04))) |>
+  replace_na(list(af_median_01 = 0, af_median_04 = 0)) |>
+  ggplot(aes(x = af_median_01, y = af_median_04)) +
+  geom_point(aes(fill = imputed), alpha = 0.5, shape = 21) +
+  scale_fill_manual(values = c('FALSE' = 'grey40', 'TRUE' = 'firebrick')) +
+  theme_bw() +
+  labs(x = "Median Variant Frequency in tailored Hg38+rDNA",
+       y = "Median Variant Frequency in Paralkar's T2T+rDNA") +
+  theme(
+    aspect.ratio = 1,
+    legend.position = 'none')
+```
+
+### 03 vs 04
+
+
+```{r}
+summary_03_04 <- full_join(
+  summary_03,
+  summary_04,
+  by = c('pos_ref', 'ref', 'alt'), suffix = c('_03', '_04')) |>
+  arrange(pos_ref, ref, alt) |>
+  select(pos_ref, ref, alt, 
+         starts_with('num_pairs'), 
+         starts_with('R_'),
+         starts_with('af_median'))
+```
+
+
+```{r}
+summary_03_04 |>
+  mutate(imputed = (is.na(R_03) | is.na(R_04))) |>
+  replace_na(list(R_03 = 0, R_04 = 0)) |>
+  ggplot(aes(x = R_03, y = R_04)) +
+  geom_point(aes(fill = imputed), alpha = 0.5, shape = 21) +
+  scale_fill_manual(values = c('FALSE' = 'grey40', 'TRUE' = 'firebrick')) +
+  theme_bw() +
+  labs(x = "Intra-twin Pearson's R in Paralkar's Hg38+rDNA",
+       y = "Intra-twin Pearson's R in Paralkar's T2T+rDNA") +
+  theme(
+    aspect.ratio = 1,
+    legend.position = 'none')
+```
+
+
+
+```{r}
+summary_03_04 |>
+  mutate(imputed = (is.na(af_median_03) | is.na(af_median_04))) |>
+  replace_na(list(af_median_03 = 0, af_median_04 = 0)) |>
+  ggplot(aes(x = af_median_03, y = af_median_04)) +
+  geom_point(aes(fill = imputed), alpha = 0.5, shape = 21) +
+  scale_fill_manual(values = c('FALSE' = 'grey40', 'TRUE' = 'firebrick')) +
+  theme_bw() +
+  labs(x = "Median Variant Frequency in Paralkar's Hg38+rDNA",
+       y = "Median Variant Frequency in Paralkar's T2T+rDNA") +
+  theme(
+    aspect.ratio = 1,
+    legend.position = 'none')
+```
+
+

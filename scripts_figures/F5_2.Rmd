@@ -1,0 +1,214 @@
+---
+title: "var_extract twin validation"
+---
+
+
+```{r}
+library(tidyverse)
+source('../setup.R')
+```
+
+## Frequency comparison with lofreq
+
+```{r}
+var_extract_freq_d2_d2 <- read_csv(
+  file.path(
+    root_fd, '01_validation', 'data', 
+    '02_var_extract_freqs', 'd2_d2_var_freq_es15l.csv'),
+  show_col_types = F)
+```
+
+```{r}
+lofreq_d2_d2 <- read_csv(
+  file.path(
+    root_fd, '01_validation', 'data', 
+    '02_selected_variants', 'variants_both_rls_ukb_wb_10_90_freqs.csv'),
+  show_col_types = F) |>
+  filter(eid %in% var_extract_freq_d2_d2$eid,
+         pos_ref %in% var_extract_freq_d2_d2$pos_ref)
+```
+
+```{r}
+lofreq_v_var_extract_d2_d2_p <- lofreq_d2_d2 |> 
+  group_by(pos_ref, ref, alt) |>
+  filter(n_distinct(eid) > 2) |>
+  ungroup() |>
+  mutate(indel_size = nchar(alt) - nchar(ref)) |>
+  rename(obs_seq = alt, freq = af) |>
+  inner_join(var_extract_freq_d2_d2, 
+             by = c('eid', 'pos_ref', 'obs_seq', 'indel_size'),
+             suffix = c('_l', '_ve')) |>
+  mutate(variant = fct_inorder(paste0(pos_ref, ':', ref, '>', obs_seq))) |>
+  ggplot(aes(x = freq_l, y = freq_ve)) +
+  geom_point(alpha = 0.5, size = 3, shape = 21,
+             stroke = 0.75, fill = 'grey80') +
+  ggpubr::stat_cor(size = 4,
+                   aes(label = cor_format(after_stat(r), after_stat(p)))) +
+  scale_x_continuous(limits = c(0, 1),
+                     breaks = c(0, 0.5, 1),
+                     labels = c('', 0.5, 1)) +
+  scale_y_continuous(limits = c(0, 1),
+                     breaks = c(0, 0.5, 1),
+                     labels = c('', 0.5, 1)) +
+  labs(x = "Reported frequency in lofreq",
+       y = "Observed frequency in var_extract") +
+  facet_wrap(. ~ variant, ncol = 4) +
+  theme_pub() +
+  theme(aspect.ratio = 1)
+```
+
+```{r}
+lofreq_v_var_extract_d2_d2_p |>
+  ggsave(filename = file.path('..', 'figures', 'FS16.png'),
+         height = 10, width = 10, dpi = 300)
+```
+
+## Haplotypes
+
+```{r}
+d2_calls_fd <- file.path(
+  root_fd, '01_validation', 'data', 
+  '02_var_extract', 'es15l', '01_bt2_hg38',
+  'twins', 'd2_d2')
+eids <- list.files(d2_calls_fd)
+
+var_extract_reads <- bind_rows(
+  lapply(
+    X = eids,
+    FUN = function(eid) {
+      ifn <- file.path(d2_calls_fd, eid, paste0(eid, '_calls.csv'))
+      read_csv(ifn, col_types = cols()) |>
+        mutate(eid = eid) |>
+        relocate(eid)
+    })) |> 
+  distinct() |>
+  group_by(eid, read_num, pos_ref) |>
+  filter(n_distinct(obs_seq) == 1, n_distinct(indel_size) == 1) |>
+  ungroup()
+```
+
+```{r}
+var_extract_per_read <- var_extract_reads |> 
+  group_by(pos_ref) |> 
+  mutate(variant = paste(pos_ref, obs_seq, indel_size, sep = '_')) |>
+  select(eid, read_num, pos_ref, variant) |>
+  pivot_wider(names_from = pos_ref, values_from = variant)
+```
+
+
+```{r}
+var_extract_per_read_haplo_no_10104_no_na <- var_extract_per_read |>
+  select(-`10104`) |>
+  na.omit() |>
+  group_by(across(c(-eid, -read_num))) |>
+  mutate(haplo = cur_group_id())
+```
+
+```{r}
+var_extract_haplos_no_10104_no_na <- var_extract_per_read_haplo_no_10104_no_na |>
+  select(-eid, -read_num) |> distinct() |> arrange(haplo)
+```
+
+```{r}
+var_extract_haplos_no_10104_no_na_freq <- var_extract_per_read_haplo_no_10104_no_na |>
+  group_by(eid, haplo) |>
+  summarise(nreads = n_distinct(read_num), .groups = 'drop') |>
+  group_by(eid) |>
+  mutate(freq_reads = nreads / sum(nreads)) |>
+  ungroup()
+```
+
+```{r}
+var_extract_haplos_no_10104_no_na_for_p <- var_extract_haplos_no_10104_no_na |>
+  pivot_longer(-haplo, names_to = 'pos_ref', values_to = 'allele') |>
+  separate(allele, into = c('pos', 'allele', 'indel_size'), sep = '_') |>
+  select(-pos) |>
+  mutate(
+      indel_size = as.numeric(indel_size),
+      type = case_when(
+        allele == 'NA' ~ 'MISS',
+        indel_size > 0 ~ 'INS',
+        indel_size == 0 ~ 'SNV',
+        TRUE ~ 'DEL')) |>
+  mutate(
+    fill_colour = case_when(
+      type == 'INS' ~ paste0('grey', 100 - (indel_size * 10)),
+      type == 'DEL' ~ paste0('grey', 100 - (-indel_size * 10)),
+      type == 'MISS' ~ 'white',
+      allele == 'A' ~ 'seagreen',
+      allele == 'C' ~ 'skyblue2',
+      allele == 'G' ~ 'yellow2',
+      allele == 'T' ~ 'firebrick2',
+      TRUE ~ 'white' ) ) |>
+  mutate(
+    the_shape = case_when(
+      type == 'INS' ~ 24,
+      type == 'DEL' ~ 25,
+      type == 'SNV' ~ 22,
+      TRUE ~ 21 ) )
+```
+
+```{r}
+var_extract_haplos_no_10104_no_na_freq_median <- var_extract_haplos_no_10104_no_na_freq |>
+  complete(eid, haplo, fill = list(nreads = 0, freq_reads = 0)) |>
+  group_by(haplo) |>
+  mutate(median_freq = median(freq_reads)) |>
+  ungroup() |>
+  arrange(desc(median_freq)) |>
+  select(haplo, median_freq) |>
+  distinct() 
+```
+
+```{r}
+var_extract_haplos_top_shapes <- var_extract_haplos_no_10104_no_na_freq_median |>
+  head(10) |>
+  inner_join(var_extract_haplos_no_10104_no_na_for_p, by = 'haplo') |>
+  mutate(haplo_id = fct_rev(fct_inorder(paste0('H', haplo)))) |>
+  ggplot(aes(x = pos_ref, y = haplo_id)) +
+  geom_point(
+    aes(fill = fill_colour,
+        shape = the_shape),
+    size = 3) +
+  scale_fill_identity() +
+  scale_shape_identity() +
+  theme_pub() +
+  labs(x = '', y = '') +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        panel.grid = element_blank(),
+        panel.grid.major.y = element_line(linewidth = 0.2, colour = 'grey90'))
+```
+
+```{r}
+var_extract_haplos_top_shapes |> ggsave(
+  filename = file.path('..', 'figures', 'F5B_shapes.png'),
+  height = 6, width = 2, dpi = 300)
+```
+
+
+```{r}
+var_extract_haplos_top_p <- var_extract_haplos_no_10104_no_na_freq |>
+  complete(eid, haplo, fill = list(nreads = 0, freq_reads = 0)) |>
+  inner_join(var_extract_haplos_no_10104_no_na_freq_median |> head(10),
+             by = 'haplo') |>
+  arrange(desc(median_freq)) |>
+  mutate(haplo_id = fct_rev(fct_inorder(paste0('H', haplo)))) |>
+  ggplot(aes(x = freq_reads, y = haplo_id)) +
+  geom_boxplot(outlier.alpha = 0) +
+  geom_point(alpha = 0.2, size = 2) +
+  scale_x_continuous(limits = c(0, 0.5)) +
+  theme_pub() +
+  labs(x = 'Intragenomic frequency', y = '') +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        panel.grid = element_blank(),
+        panel.grid.major.y = element_line(linewidth = 0.2, colour = 'grey90'))
+```
+
+```{r}
+var_extract_haplos_top |> ggsave(
+  filename = file.path('..', 'figures', 'F5B_freqs.png'),
+  height = 6, width = 6, dpi = 300)
+```
+

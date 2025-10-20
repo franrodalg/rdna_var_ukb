@@ -1,0 +1,743 @@
+---
+title: "Analyse RNA- and Poly-Seq data"
+---
+
+```{r}
+library(tidyverse)
+library(scales)
+source('../setup.R')
+```
+
+
+```{r}
+adjust_pos <- function(pos, loop_size=2120) {
+  if_else(pos<=loop_size, pos-loop_size-1, pos-loop_size)
+}
+```
+
+```{r}
+read_lofreq <- function(fd, fn='snps', loop_size=2120) {
+  bind_rows(
+    lapply(
+      X=list.files(fd),
+      FUN=function(x) { 
+        if(!file.exists(
+          file.path(fd, x, paste0(x, ".", fn, ".vcf")))) return(NULL)
+        read_tsv(
+          file.path(fd, x, paste0(x, ".", fn, ".vcf")), 
+          comment = "#",
+          col_names=F,
+          col_types=cols()) %>%
+          mutate(sample=x)})) %>%
+    select(sample, pos=X2, ref=X4, alt=X5, info=X8) %>%
+    separate(info, into=c('dp', 'af'), sep=';', extra='drop') %>%
+    mutate(af=as.numeric(gsub('AF=', '', af)),
+           dp=as.numeric(gsub('DP=', '', dp))) %>%
+    mutate(pos_ref=adjust_pos(pos, loop_size=loop_size))
+}
+```
+
+## Publicly-available RNA-Seq (Taylor et al)
+
+
+```{r}
+taylor_metadata <- read_csv(file.path(
+  taylor_fd, 'src', 'taylor_metadata.csv'),
+  col_types = cols())
+```
+
+```{r}
+lofreq_var_gbr_rna <- read_lofreq(file.path(
+  taylor_fd, 'data', '03_variants_bt2'),
+  'many') |>
+    filter(dp > 100) |>
+    rename(run = sample) |>
+    inner_join(taylor_metadata |> select(run = Run, sample = `Sample Name`),
+               by = 'run') |>
+    mutate(dp_total = dp/af) |> 
+    group_by(sample, pos, pos_ref, ref, alt) |>
+    summarise(af = sum(dp)/sum(dp_total),
+              dp = sum(dp),
+              .groups = 'drop')
+```
+
+## WGS
+
+```{r}
+lofreq_var_gbr_dna <- read_lofreq(file.path(
+  wgs_fd, 'data', 'lofreq_snv_indel'), 'many') |>
+  filter(dp > 100)
+```
+
+## RNA-Seq vs WGS - Single positions
+
+```{r}
+lofreq_var_gbr_rna_v_dna <- lofreq_var_gbr_rna |>
+  inner_join(lofreq_var_gbr_dna,
+             by = c('sample', 'pos_ref', 'pos', 'ref', 'alt'),
+             suffix = c('_rna', '_dna')) |>
+  select(-pos) |>
+  mutate(var = paste0(pos_ref, ':', ref, '>', alt)) |>
+  relocate(sample, var, pos_ref) |>
+  arrange(pos_ref, ref, alt) |>
+  mutate(var = fct_inorder(var))
+```
+
+```{r}
+vars_es15l <- tribble(~var,
+  '10065:G>GGGCGGC', 
+  '10082:G>GCGGC', 
+  '10084:GGT>G',
+  '10086:T>G', 
+  '10097:C>CT',
+  '10104:G>GC',
+  '10104:G>GCC',
+  '10104:G>GCCC') |>
+  separate(
+    var, into = c('pos_ref', 'alleles'), sep = ':', remove = F ) |>
+  mutate(pos_ref = as.numeric(pos_ref)) |>
+  separate(
+    alleles, into = c('ref', 'alt'), sep = '>', remove = F) |>
+  mutate(indel_size = nchar(alt) - nchar(ref))
+```
+
+
+```{r}
+lofreq_var_gbr_rna_v_dna |> 
+  filter(pos_ref >= 10065, pos_ref <= 10104) |>
+  filter(var %in% vars_es15l$var) |>
+  ggplot(aes(x = af_dna, y = af_rna)) +
+  ggpubr::stat_cor(aes(label = cor_format(..r.., ..p..))) +
+  geom_point(size = 3, shape = 21, fill = 'grey90', alpha = 0.4) +
+  scale_x_continuous(limits = c(0, 0.6), 
+                     breaks = c(0, 0.25, 0.5),
+                     labels = c('', 0.25, 0.5)) +
+  scale_y_continuous(limits = c(0, 0.6), 
+                     breaks = c(0, 0.25, 0.5),
+                     labels = c('', 0.25, 0.5)) +
+  facet_wrap(. ~ var, ncol = 4) +
+  theme_pub() +
+  labs(x = 'Intragenomic Variant Frequency in WGS',
+       y = 'Variant Expression Frequency in RNA-Seq') +
+  theme(aspect.ratio = 1)
+```
+
+
+## Poly-Seq
+
+
+```{r}
+pseq_gbr_metadata <- read_csv(
+  file.path(pseq_fd, 'data', '2025_06_09', '00_metadata', 'gbr_taylor_md.csv'),
+  col_types = cols()) |>
+  filter(Fraction %in% c('Input', 'Polysome'))
+```
+
+### QC
+
+```{r}
+seq_qc <- bind_rows(
+  read_csv(file.path(qc_fd1, list.files(qc_fd1, pattern = 'seq_qc')),
+         show_col_types = F),
+  read_csv(file.path(qc_fd2, list.files(qc_fd2, pattern = 'seq_qc')),
+         show_col_types = F)) |>
+  separate(Filename, into = 'Sample', sep = '_', remove = FALSE, extra = 'drop') |>
+  mutate(aux = stringi::stri_reverse(gsub('.fq.gz', '', Filename))) |>
+  separate(aux, into = c('Mate', 'Lane'), sep = '_', extra = 'drop') |>
+  mutate(Lane = stringi::stri_reverse(Lane),
+         Mate = as.numeric(Mate)) |>
+  filter(Sample %in% pseq_gbr_metadata$Sample) |>
+  select(Sample, Mate, `Total Sequences`, 
+         `Poor Quality Sequences` = `Sequences flagged as poor quality`, 
+         `Sequence length`, Yield = Bases_Num, `%GC`) |>
+  pivot_wider(id_cols = Sample, names_from = Mate,
+              names_sep = " in Mate ",
+              values_from = c(`Total Sequences`, 
+                              `Poor Quality Sequences`, `Sequence length`, Yield, `%GC`))
+```
+
+```{r}
+trim_qc <- bind_rows(
+  read_csv(file.path(qc_fd1, list.files(qc_fd1, pattern = 'trim_out')),
+                     col_types = cols()),
+  read_csv(file.path(qc_fd2, list.files(qc_fd2, pattern = 'trim_out')),
+                     col_types = cols())) |>
+  filter(Sample %in% pseq_gbr_metadata$Sample) |>
+  select(Sample, Mate, `Reads with adapters (%)`, 
+         `Quality-trimmed bases (%)` = `Quality-trimmed (%)`,
+         `Reads passing TrimGalore filters` = `Reads written (passing filters)`) |>
+  pivot_wider(id_cols = Sample, names_from = Mate,
+                names_sep = " in Mate ",
+                values_from = -c(Sample, Mate))
+  
+```
+
+
+```{r}
+align_qc <- bind_rows(
+  read_csv(file.path(qc_fd1, list.files(qc_fd1, pattern = 'star_out')),
+                     col_types = cols()),
+  read_csv(file.path(qc_fd2, list.files(qc_fd2, pattern = 'star_out')),
+                     col_types = cols())) |>
+  rename(Sample = seq_sample) |>
+  mutate_at(vars(contains('%')), ~as.numeric(stringr::str_replace(., '%', ''))) |>
+  filter(Sample %in% pseq_gbr_metadata$Sample) |>
+  select(Sample, 
+         `Uniquely mapped reads (%)` = `Uniquely mapped reads %`,
+         `Reads mapped to multiple loci (%)` = `% of reads mapped to multiple loci`,
+         `Average mapped length`,
+         `Mismatch rate per base (%)` = `Mismatch rate per base, %`) 
+  
+```
+
+```{r}
+qc <- pseq_gbr_metadata |> select(Sample, `1kGP Sample ID`, Sex, Fraction) |>
+  inner_join(seq_qc, by = 'Sample') |>
+  inner_join(trim_qc, by = 'Sample') |>
+  inner_join(align_qc, by = 'Sample') |>
+  select(-Sample) |>
+  arrange(`1kGP Sample ID`, Fraction)
+```
+
+```{r}
+qc |> write_csv(file = '../tables/qc.csv', na = '')
+```
+
+
+
+### Sucrose Absorbance Profiles
+
+```{r}
+pseq_profiles <- bind_rows(
+  lapply(
+    X = list.files(pseq_profile_fd),
+    FUN = function(x) {
+      read_csv(file.path(pseq_profile_fd, x),
+               skip = 51, show_col_types = F) |>
+        mutate(sample = x) |>
+        separate(sample, into = 'sample', extra = 'drop') |>
+        relocate(sample)
+    })
+)
+```
+
+```{r, fig.height = 20, fig.width = 14}
+pseq_profiles |>
+  filter(Position >= 0) |>
+  ggplot(aes(x = Position)) +
+  geom_line(aes(y = AbsA), linewidth = 1, colour = 'firebrick') +
+  geom_segment(data = pseq_profiles |> filter(!is.na(`Fraction Number`)),
+               aes(x = Position, y = -Inf, yend = 1),
+               colour = 'grey40') +
+  geom_text(data = pseq_profiles |> filter(!is.na(`Fraction Number`)),
+               aes(x = Position - 0.2, y = 0, label = `Fraction Number`,
+                   hjust = 1),
+               colour = 'grey40') +
+  facet_grid(rows = vars(sample)) +
+  theme_pub() +
+  labs(y = 'Absorbance', x = 'Position (mm)') +
+  theme(strip.text.y = element_text(angle = 0, size = 16),
+        axis.text = element_text(size = 14),
+        axis.title = element_text(size = 16))
+```
+
+
+
+### Variant Frequencies
+
+```{r}
+calculate_freqs <- function(id, fd) {
+  ifn <- paste0(fd, id, '/', id, '_calls.csv')
+  tryCatch({
+    read_csv(ifn, col_types = cols()) |>
+      mutate(id = id) |>
+      relocate(id) |>
+      distinct() |>
+      group_by(id, read_num, pos_ref) |>
+      mutate(to_remove = n_distinct(obs_seq) != 1 | n_distinct(indel_size) != 1) |>
+      group_by(id, read_num) |>
+      filter(! any(to_remove)) |>
+      select(-to_remove) |>
+      group_by(id, pos_ref, indel_size, obs_seq) |>
+      summarise(nreads = n_distinct(read_num), .groups = 'drop') |>
+      group_by(id, pos_ref) |>
+      mutate(freads = nreads / sum(nreads)) |>
+      inner_join(vars_es15l, 
+                 by = c('pos_ref', 'obs_seq' = 'alt', 'indel_size')) |>
+      ungroup() |>
+      select(id, var, nreads, freads)},
+    error = function(cond) {
+        print(paste0('File ', id, ': error' ));
+        return(NULL)})
+}
+```
+
+```{r}
+calculated_freqs_pseq <- bind_rows(
+  bind_rows(
+    lapply(
+      X = sample_ids_1,
+      FUN = function(x) calculate_freqs(id = x, fd = root_fd_1)) ) |>
+    mutate(batch = 'B1') |>
+    ungroup() |>
+    complete(id, var, batch, fill = list(nreads = 0, freads = 0)),
+  bind_rows(
+    lapply(
+      X = sample_ids_2,
+      FUN = function(x) calculate_freqs(id = x, fd = root_fd_2)) ) |>
+    mutate(batch = 'B2') |>
+    ungroup() |>
+    complete(id, var, batch, fill = list(nreads = 0, freads = 0)))
+```
+
+
+```{r, fig.height = 6}
+calculated_freqs_pseq |>
+  inner_join(pseq_gbr_metadata, by = c('id' = 'Sample')) |>
+  filter(Fraction == 'Input') |>
+  select(`1kGP Sample ID`, var, nreads, freads) |>
+  inner_join(lofreq_var_gbr_rna_v_dna |>
+               complete(sample, var, fill = list(af_rna = 0, af_dna = 0)) , 
+             by = c('1kGP Sample ID' = 'sample', 'var')) |>
+  ggplot(aes(x = af_rna, y = freads)) +
+  ggpubr::stat_cor(aes(label = cor_format(..r.., ..p..))) +
+  geom_point(size = 3, shape = 21, fill = 'grey90', alpha = 0.4) +
+  scale_x_continuous(limits = c(0, 0.6), 
+                     breaks = c(0, 0.25, 0.5),
+                     labels = c('', 0.25, 0.5)) +
+  scale_y_continuous(limits = c(0, 0.6), 
+                     breaks = c(0, 0.25, 0.5),
+                     labels = c('', 0.25, 0.5)) +
+  facet_wrap(. ~ var, ncol = 4) +
+  theme_pub() +
+  labs(x = 'Variant Expression Frequency in publicly-available RNA-Seq',
+       y = 'Variant Expression Frequency in generated RNA-Seq') +
+  theme(aspect.ratio = 1)
+```
+
+
+
+### Haplotypes
+
+```{r}
+twins_haplos <- read_csv(
+  paste0('../01_validation/data/02_var_extract_haplos/es15l_haplotypes_twins.csv'),
+  col_types = cols()) |> 
+  pivot_wider(id_cols = c('haplo', 'median_freq'),
+              names_from = pos_ref, values_from = allele)
+```
+
+```{r}
+assign_haplos <- function(id, fd) {
+  ifn <- paste0(fd, id, '/', id, '_calls.csv')
+  tryCatch({
+    read_csv(ifn, col_types = cols()) |>
+      mutate(id = id) |>
+      relocate(id) |>
+      distinct() |>
+      group_by(id, read_num, pos_ref) |>
+      mutate(to_remove = n_distinct(obs_seq) != 1 | n_distinct(indel_size) != 1) |>
+      group_by(id, read_num) |>
+      filter(! any(to_remove)) |>
+      select(-indel_size, -to_remove) |>
+      pivot_wider(id_cols = c('id', 'read_num'), 
+                  names_from = pos_ref, values_from = obs_seq)  |>
+      filter(!is.na(`10065`), !is.na(`10097`)) |>
+      group_by(`10065`, `10082`, `10084`, `10086`, `10097`) |>
+      mutate(haplo_internal = cur_group_id()) |>
+      group_by(across(c(-read_num, -`10104`)))},
+    error = function(cond) {
+        print(paste0('File ', id, ': error' ));
+        return(NULL)})
+}
+```
+
+```{r}
+tally_haplos <- function(id, fd) {
+  ifn <- paste0(fd, id, '/', id, '_calls.csv')
+  tryCatch({
+    read_csv(ifn, col_types = cols()) |>
+      mutate(id = id) |>
+      relocate(id) |>
+      distinct() |>
+      group_by(id, read_num, pos_ref) |>
+      mutate(to_remove = n_distinct(obs_seq) != 1 | n_distinct(indel_size) != 1) |>
+      group_by(id, read_num) |>
+      filter(! any(to_remove)) |>
+      select(-indel_size, -to_remove) |>
+      pivot_wider(id_cols = c('id', 'read_num'), 
+                  names_from = pos_ref, values_from = obs_seq)  |>
+      filter(!is.na(`10065`), !is.na(`10097`)) |>
+      group_by(`10065`, `10082`, `10084`, `10086`, `10097`) |>
+      mutate(haplo_internal = cur_group_id()) |>
+      group_by(across(c(-read_num, -`10104`))) |>
+      summarise(nreads = n_distinct(read_num), .groups = 'drop') |>
+      arrange(id, desc(nreads)) |>
+      group_by(id) |>
+      mutate(freads = nreads / sum(nreads)) |>
+      inner_join(twins_haplos, 
+                 by = c('10065', '10082', '10084', '10086', '10097')) |>
+      select(id, haplo, nreads, freads)},
+    error = function(cond) {
+        print(paste0('File ', id, ': error' ));
+        return(NULL)})
+}
+```
+
+```{r}
+batch_1 <- '2025_03_27'
+root_fd_1 <- file.path(pseq_fd, 'data/', batch_1, '/02_var_extract_es15l/')
+sample_ids_1 <- list.files(root_fd_1)
+
+batch_2 <- '2025_06_09'
+root_fd_2 <- file.path(pseq_fd, 'data/', batch_2, '/02_var_extract_es15l/')
+sample_ids_2 <- list.files(root_fd_2)
+```
+
+```{r}
+tallied_haplos <- bind_rows(
+  bind_rows(
+    lapply(
+      X = sample_ids_1,
+      FUN = function(x) tally_haplos(id = x, fd = root_fd_1)) ) |>
+    mutate(batch = 'B1') |>
+    ungroup() |>
+    complete(id, haplo, batch, fill = list(nreads = 0, freads = 0)),
+  bind_rows(
+    lapply(
+      X = sample_ids_2,
+      FUN = function(x) tally_haplos(id = x, fd = root_fd_2)) ) |>
+    mutate(batch = 'B2') |>
+    ungroup() |>
+    complete(id, haplo, batch, fill = list(nreads = 0, freads = 0)))
+  
+```
+
+```{r}
+tallied_haplos_fractions <- tallied_haplos |>
+  inner_join(pseq_gbr_metadata, by = c('id' = 'Sample')) |>
+  mutate(haplo_num = as.numeric(gsub('H', '', haplo))) |>
+  filter(haplo_num <= 10) |>
+  arrange(haplo_num)
+```
+
+
+```{r}
+tallied_haplos_fractions |> filter(Fraction != 'Monosome') |>
+    select(`1kGP Sample ID`, Fraction, haplo, freads) |>
+    pivot_wider(id_cols = c(`1kGP Sample ID`, haplo), 
+                names_from = Fraction, values_from = freads) |>
+  mutate(haplo_num = as.numeric(gsub('H', '', haplo))) |>
+  arrange(haplo_num) |>
+  mutate(haplo = fct_inorder(haplo)) |>
+  ggplot(aes(x = Input, y = Polysome)) +
+  geom_segment(x = -Inf, xend = Inf, y = -Inf, yend = Inf,
+               colour = 'grey90') +
+  ggpubr::stat_cor(aes(label = cor_format(..r.., ..p..))) +
+  geom_point(size = 3, shape = 21, fill = 'grey90', alpha = 0.4) +
+  scale_x_continuous(limits = c(0, 0.6), 
+                     breaks = c(0, 0.25, 0.5),
+                     labels = c('', 0.25, 0.5)) +
+  scale_y_continuous(limits = c(0, 0.6), 
+                     breaks = c(0, 0.25, 0.5),
+                     labels = c('', 0.25, 0.5)) +
+  facet_wrap(. ~ haplo, ncol = 5) +
+  theme_pub() +
+  labs(x = 'Frequency in mRNA Fraction',
+       y = 'Frequency in Polysome Fraction') +
+  theme(aspect.ratio = 1)
+```
+
+```{r, fig.height = 4, fig.width = 12}
+tallied_haplos_fractions |> filter(Fraction != 'Monosome', haplo_num <=5) |>
+    select(`1kGP Sample ID`, Fraction, haplo, freads) |>
+    pivot_wider(id_cols = c(`1kGP Sample ID`, haplo), 
+                names_from = Fraction, values_from = freads) |>
+  mutate(haplo_num = as.numeric(gsub('H', '', haplo))) |>
+  arrange(haplo_num) |>
+  mutate(haplo = fct_inorder(haplo)) |>
+  ggplot(aes(x = Input, y = Polysome)) +
+  geom_segment(x = -Inf, xend = Inf, y = -Inf, yend = Inf,
+               colour = 'grey90') +
+  ggpubr::stat_cor(aes(label = cor_format(..r.., ..p..))) +
+  geom_point(size = 3, shape = 21, fill = 'grey90', alpha = 0.4) +
+  scale_x_continuous(limits = c(0, 0.6), 
+                     breaks = c(0, 0.25, 0.5),
+                     labels = c('', 0.25, 0.5)) +
+  scale_y_continuous(limits = c(0, 0.6), 
+                     breaks = c(0, 0.25, 0.5),
+                     labels = c('', 0.25, 0.5)) +
+  facet_wrap(. ~ haplo, ncol = 5) +
+  theme_pub() +
+  labs(x = 'Frequency in mRNA Fraction',
+       y = 'Frequency in\nPolysome Fraction') +
+  theme(aspect.ratio = 1)
+```
+
+```{r}
+tallied_haplos_input_dna_gbr <- tallied_haplos_fractions |>
+  filter(Fraction == 'Input') |>
+  select(`1kGP Sample ID`, batch, haplo, nreads, freads) |>
+  inner_join(tallied_haplos_wgs_gbr |> 
+               group_by(id) |> 
+               filter(sum(nreads) > 1000),
+             by = c('1kGP Sample ID' = 'id', 'haplo'),
+             suffix = c('_rna', '_dna')) |>
+  mutate(haplo = fct_inorder(haplo))
+```
+
+```{r}
+tallied_haplos_input_dna_gbr |>
+  ggplot(aes(x = freads_dna, y = freads_rna)) +
+  geom_segment(x = -Inf, xend = Inf, y = -Inf, yend = Inf,
+               colour = 'grey90') +
+  ggpubr::stat_cor(aes(label = cor_format(..r.., ..p..))) +
+  geom_point(size = 3, shape = 21, fill = 'grey90', alpha = 0.4) +
+  scale_x_continuous(limits = c(0, 0.6), 
+                     breaks = c(0, 0.25, 0.5),
+                     labels = c('', 0.25, 0.5)) +
+  scale_y_continuous(limits = c(0, 0.6), 
+                     breaks = c(0, 0.25, 0.5),
+                     labels = c('', 0.25, 0.5)) +
+  facet_wrap(. ~ haplo, ncol = 5) +
+  theme_pub() +
+  labs(x = 'Frequency in WGS',
+       y = 'Frequency in mRNA Fraction') +
+  theme(aspect.ratio = 1)
+```
+
+```{r, fig.height = 4, fig.width = 12}
+tallied_haplos_input_dna_gbr |>
+  filter(haplo %in% c('H1', 'H2', 'H3', 'H4', 'H5')) |>
+  ggplot(aes(x = freads_dna, y = freads_rna)) +
+  geom_segment(x = -Inf, xend = Inf, y = -Inf, yend = Inf,
+               colour = 'grey90') +
+  ggpubr::stat_cor(aes(label = cor_format(..r.., ..p..))) +
+  geom_point(size = 3, shape = 21, fill = 'grey90', alpha = 0.4) +
+  scale_x_continuous(limits = c(0, 0.6), 
+                     breaks = c(0, 0.25, 0.5),
+                     labels = c('', 0.25, 0.5)) +
+  scale_y_continuous(limits = c(0, 0.6), 
+                     breaks = c(0, 0.25, 0.5),
+                     labels = c('', 0.25, 0.5)) +
+  facet_wrap(. ~ haplo, ncol = 5) +
+  theme_pub() +
+  labs(x = 'Frequency in WGS',
+       y = 'Frequency in\nmRNA Fraction') +
+  theme(aspect.ratio = 1)
+```
+
+```{r}
+tallied_haplos_input_dna_gbr |> 
+  filter(haplo %in% c('H3', 'H4')) |>
+  select(`1kGP Sample ID`, haplo, freads_rna, freads_dna) |>
+  pivot_longer(-c('1kGP Sample ID', 'haplo'),
+               names_to = 'Source', values_to = 'Freq') |>
+  mutate(Source = toupper(gsub('freads_', '', Source))) |>
+  ggplot(aes(x = Source, y = Freq)) +
+  geom_line(aes(group = `1kGP Sample ID`),
+          linewidth = 0.3, colour = 'grey70') +
+  geom_boxplot(aes(colour = Source), fill = 'grey99', linewidth = 1,
+               outlier.alpha = 0) +
+  geom_point(aes(fill = Source), 
+             alpha = 0.7, shape = 21, size = 4, stroke = 0.75) +
+  ggpubr::stat_compare_means(
+    comparisons = list(c(1, 2)),
+    paired = T, label.y = 0.45, size = 4.5) +
+  scale_y_continuous(
+    limits = c(0, 0.5),
+    breaks = c(0, 0.25, 0.5),
+    labels = c('', 0.25, '0.50')) +
+  scale_fill_manual(values = c('DNA' = 'firebrick3',
+                               'RNA' = 'seagreen4')) +
+  scale_colour_manual(values = c('DNA' = 'firebrick3',
+                               'RNA' = 'seagreen4')) +
+  facet_grid(cols = vars(haplo)) +
+  labs(x = '', y = 'Expression Frequency') +
+  theme_pub() +
+  theme(
+    legend.position = 'none',
+    aspect.ratio = 1,
+    panel.grid = element_blank(),
+    strip.background = element_blank())
+```
+
+## Transcriptional Efficiency
+
+```{r}
+te_results <- read_csv('../02_analysis/data/08_te/te_fit_gbr_h1_10_sep_norm.csv',
+         show_col_types = F)
+```
+
+```{r}
+te_gbr <- read_csv('../02_analysis/data/08_te/te_gbr.csv',
+                   show_col_types = F)
+```
+
+```{r}
+features_to_keep_gbr_stringent <- te_gbr |>
+  select("Feature", "Participant", "Input", "Polysome", "Batch", "Sex") |>
+  group_by(Participant) |>
+  mutate(CPM_Input = edgeR::cpm(Input - 1)[,1],
+           CPM_Poly = edgeR::cpm(Polysome - 1)[,1]) |>
+  group_by(Feature) |>
+  filter((sum(Input <= 1) / n_distinct(Participant)) <= 0.3,
+         (sum(CPM_Input > 1) > 1 | sum(CPM_Poly > 1) > 1)) |>
+  select(Feature) |>
+  distinct() |>
+  separate(Feature,
+           into = c('ensembl_gene_id', 'version'), remove = F) |>
+  inner_join(genes_info |> filter(chromosome_name %in% 1:22),
+             by = c('ensembl_gene_id'))
+```
+
+
+```{r}
+te_results_keep_stringent_h1_h5 <- te_results |>
+  filter(Haplo %in% c('H1', 'H2', 'H3', 'H4', 'H5')) |>
+  inner_join(features_to_keep_gbr_stringent, by = 'Feature') |>
+  mutate(fdr = p.adjust(p.value, method = 'fdr')) 
+```
+
+
+```{r}
+te_results_fdr_list_stringent <- te_results_keep_stringent |>
+  filter(fdr < 0.01) |>
+  select(Feature, Haplo) |>
+  pivot_wider(names_from = Haplo, values_from = Feature, values_fn = list) |>
+  as.list() |>
+  unlist(recursive = F)
+```
+
+```{r, fig.height = 7}
+ggVennDiagram::ggVennDiagram(
+  te_results_fdr_list_stringent, label = 'count',
+  label_geom = 'text', label_color = 'grey50',label_alpha = 1) +
+  scale_fill_gradient2('Number of \nFDR < 0.01\nassociations', 
+                      low = 'white', mid = 'white', midpoint = 10, high = 'gold3')
+```
+
+```{r}
+te_results_annot_stringent <- te_results_keep_stringent |>
+  mutate(`FDR < 0.01` = (fdr < 0.01)) |>
+  group_by(gene_biotype) |>
+  mutate(
+    Type = case_when(
+      gene_biotype == 'protein_coding' ~ 'Protein Coding',
+      gene_biotype == 'lncRNA' ~ gene_biotype,
+      grepl('TEC', gene_biotype) ~ 'To Be Experimentally\nConfirmed',
+      grepl('_pseudogene', gene_biotype) ~ 'Pseudogene',
+      TRUE ~ 'Other'
+    )) |> ungroup() 
+```
+
+```{r, fig.width = 10}
+te_results_annot_stringent |>
+  filter(Haplo %in% c('H3', 'H9')) |>
+  ggplot(aes(x = estimate, y = -log10(p.value))) +
+  geom_point(aes(fill = `FDR < 0.01`, shape = Type), alpha = 0.3) +
+  scale_shape_manual(values = c(21:25)) +
+  facet_grid(cols = vars(Haplo)) +
+  scale_fill_manual(values = c('TRUE' = 'firebrick3', 'FALSE' = 'grey90')) +
+  labs(x = 'Standardised Beta',
+       y = bquote(bold(-log[10](p-value)))) +
+  theme_pub() +
+  theme(aspect.ratio = 1,
+        legend.title = element_text(face = 'bold', size = 12),
+        legend.text = element_text(size = 11),
+        axis.title = element_text(face = 'bold'),
+        strip.text = element_text(size = 16, face = 'bold')) +
+  guides(
+    fill = guide_legend(override.aes = list(shape = 21, alpha = 1, size = 4)),
+    shape = guide_legend(override.aes = list(size = 4, stroke = 0.75))
+  )
+```
+
+```{r}
+te_results_annot_prev_stringent <- te_results_annot_stringent |>
+  select(Feature, fdr, Type) |>
+  group_by(Feature) |>
+  mutate(`FDR < 0.01` = any(fdr < 0.01)) |>
+  select(-fdr) |>
+  distinct() |>
+  group_by(`FDR < 0.01`, Type) |>
+  summarise(`Number of Features` = n_distinct(Feature), .groups = 'drop_last') |>
+  mutate(Prevalence = `Number of Features` / sum(`Number of Features`)) |>
+  ungroup() |>
+  pivot_wider(id_cols = Type, 
+              names_from = `FDR < 0.01`, 
+              values_from = 'Prevalence', values_fill = 0)
+```
+
+```{r}
+te_results_annot_prev_stringent
+```
+
+
+```{r, fig.width = 10}
+te_results_annot_prev_stringent |>
+  pivot_longer(-Type, names_to = 'FDR < 0.01', 
+               values_to = 'Prevalence') |>
+  ggplot(aes(x = Type, y = Prevalence)) +
+  geom_col(aes(group = `FDR < 0.01`, fill = `FDR < 0.01`),
+           position = position_dodge(width = 0.99), color = 'grey50') +
+  scale_y_continuous(labels = scales::percent) +
+  theme_pub() +
+  scale_fill_manual(values = c('TRUE' = 'firebrick3', 'FALSE' = 'grey90')) +
+  labs(x = '', y = 'Prevalence in Set')
+  
+```
+```{r}
+te_results_annot_stringent |> 
+  mutate(Novel = grepl('novel transcript', description)) |>
+  select(Feature, fdr, Novel) |>
+  group_by(Feature) |>
+  mutate(`FDR < 0.01` = any(fdr < 0.01)) |>
+  select(-fdr) |>
+  distinct() |>
+  group_by(`FDR < 0.01`, Novel) |>
+  summarise(`Number of Features` = n_distinct(Feature), .groups = 'drop_last') |>
+  mutate(Prevalence = `Number of Features` / sum(`Number of Features`)) |>
+  ungroup() |>
+  pivot_wider(id_cols = Novel, 
+              names_from = `FDR < 0.01`, 
+              values_from = 'Prevalence', values_fill = 0)
+```
+
+
+```{r, fig.width = 13}
+novel_transcripts_stringent <- te_results_annot_stringent |> 
+  arrange(p.value) |> 
+  filter(grepl('novel transcript', description)) |> 
+  slice(1:10) |> pull(Feature)
+
+te_gbr |> group_by(Participant) |> 
+  mutate(CPM_Input = edgeR::cpm(Input - 1)[,1],
+         CPM_Poly = edgeR::cpm(Polysome - 1)[,1]) |>
+  filter(Feature %in% novel_transcripts_stringent) |>
+  select(Feature, Participant, starts_with('CPM')) |>
+  pivot_longer(-c(Participant, Feature),
+               names_to = 'Source', values_to = 'CPM', names_prefix = 'CPM_') |>
+  group_by(Source) |>
+  mutate(Source = if_else(Source == 'Input', 'mRNA', 'Polysomes')) |>
+  ggplot(aes(x = Source, y = CPM)) +
+  geom_line(aes(group = `Participant`),
+          linewidth = 0.3, colour = 'grey70') +
+  geom_boxplot(aes(colour = Source), fill = 'grey99', linewidth = 1,
+               outlier.alpha = 0) +
+  geom_point(aes(fill = Source), 
+             alpha = 0.7, shape = 21, size = 4, stroke = 0.75) +
+  scale_fill_manual(values = c('Polysomes' = 'steelblue4',
+                               'mRNA' = 'seagreen4')) +
+  scale_colour_manual(values = c('Polysomes' = 'steelblue4',
+                               'mRNA' = 'seagreen4')) +
+  facet_wrap(vars(Feature), ncol = 5) +
+  labs(x = '', y = 'CPM') +
+  theme_pub() +
+  theme(
+    legend.position = 'none',
+    aspect.ratio = 1,
+    panel.grid = element_blank(),
+    strip.background = element_blank())
+```
+

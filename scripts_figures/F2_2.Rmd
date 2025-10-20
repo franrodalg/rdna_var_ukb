@@ -1,0 +1,829 @@
+---
+title: "Variant selection in twins, including both sequencing releases"
+---
+
+```{r}
+library(tidyverse)
+source('../setup.R')
+```
+
+## Auxiliary functions
+```{r}
+adjust_pos <- function(pos, loop_size=2120) {
+  if_else(pos<=loop_size, pos-loop_size-1, pos-loop_size)
+}
+```
+
+```{r}
+read_lofreq <- function(fd, fn='snps', loop_size=2120) {
+  bind_rows(
+    lapply(
+      X=list.files(fd),
+      FUN=function(x) { 
+        if(!file.exists(
+          file.path(fd, x, paste0(x, ".", fn, ".vcf")))) return(NULL)
+        read_tsv(
+          file.path(fd, x, paste0(x, ".", fn, ".vcf")), 
+          comment = "#",
+          col_names=F,
+          col_types=cols()) %>%
+          mutate(sample=x)})) %>%
+    select(sample, pos=X2, ref=X4, alt=X5, info=X8) %>%
+    separate(info, into=c('dp', 'af'), sep=';', extra='drop') %>%
+    mutate(af=as.numeric(gsub('AF=', '', af)),
+           dp=as.numeric(gsub('DP=', '', dp))) %>%
+    mutate(pos_ref=adjust_pos(pos, loop_size=loop_size))
+}
+```
+
+```{r}
+compare_twins_af_var <- function(df, the_var = variants[1]) {
+  df_aux <- df |> filter(var == the_var)
+  if(nrow(df_aux) < 3) return(NULL)
+  cor.test(df_aux$af_1, df_aux$af_2) |>
+    broom::tidy() |>
+    mutate(
+      Variant = the_var,
+      N = nrow(df_aux)) |>
+    relocate(Variant, N)}
+```
+
+## Identification of WHITE BRITISH twin pairs
+
+```{r}
+relatives <- read_csv(
+  file.path(root_fd, '..', 'data', 'pheno', 'ukb_rel_dist.csv'), 
+  col_types = cols())
+```
+
+```{r}
+twins <- relatives |> 
+  filter(grepl('MZ', dist)) |>
+  select(relation, eid_1 = ID1, eid_2 = ID2)
+```
+
+```{r}
+ukb_demo_wb <- read_csv(
+  file.path(
+    root_fd, '..', 'data', 'pheno', 'ukb_demo.csv'),
+  col_types = cols()) |>
+  filter(Eth_Back == 1001)
+```
+
+```{r}
+twins_wb <- twins |> filter(
+  eid_1 %in% ukb_demo_wb$eid,
+  eid_2 %in% ukb_demo_wb$eid)
+```
+
+```{r}
+twins_wb_eids <- c(twins_wb$eid_1, twins_wb$eid_2)
+```
+
+## Full realignment to rDNA only
+
+### deCODE 2 vs deCODE 2
+
+```{r}
+ifd_d2_d2_ky <- file.path(
+  root_fd, '01_validation', 'data', '01_realigned_variants',
+  '05_bt2_ky' , 'twins', 'd2_d2')
+ifd_d2_d2_ky_prom <- file.path(
+  root_fd, '01_validation', 'data', '01_realigned_variants_promoter',
+  '05_bt2_ky' , 'twins', 'd2_d2')
+```
+
+
+```{r}
+twins_wb_d2_d2_ky_many_vars <- bind_rows(
+  read_lofreq(ifd_d2_d2_ky, 'many') |>
+    filter(sample %in% twins_wb_eids, dp > 100),
+  read_lofreq(ifd_d2_d2_ky_prom, 'many') |>
+    filter(sample %in% twins_wb_eids, dp > 100))
+```
+
+```{r}
+twins_wb_d2_d2_ky_unfilt_vars <- bind_rows(
+  read_lofreq(ifd_d2_d2_ky, 'unfilt') |>
+    filter(sample %in% twins_wb_eids, dp > 100),
+  read_lofreq(ifd_d2_d2_ky_prom, 'unfilt') |>
+    filter(sample %in% twins_wb_eids, dp > 100))
+```
+
+```{r}
+twins_wb_d2_d2_ky_hc_vars <- bind_rows(
+  read_lofreq(ifd_d2_d2_ky, 'hc') |>
+    filter(sample %in% twins_wb_eids, dp > 100),
+  read_lofreq(ifd_d2_d2_ky_prom, 'hc') |>
+    filter(sample %in% twins_wb_eids, dp > 100))
+```
+
+### Sanger 2 vs Sanger 2
+
+```{r}
+ifd_s2_s2_ky <- file.path(
+  root_fd, '01_validation', 'data', '01_realigned_variants',
+  '05_bt2_ky' , 'twins', 's2_s2')
+ifd_s2_s2_ky_prom <- file.path(
+  root_fd, '01_validation', 'data', '01_realigned_variants_promoter',
+  '05_bt2_ky' , 'twins', 's2_s2')
+```
+
+```{r}
+twins_wb_s2_s2_ky_many_vars <- bind_rows(
+  read_lofreq(ifd_s2_s2_ky, 'many') |>
+  filter(sample %in% twins_wb_eids, dp > 100),
+  read_lofreq(ifd_s2_s2_ky_prom, 'many') |>
+  filter(sample %in% twins_wb_eids, dp > 100))
+```
+
+```{r}
+twins_wb_s2_s2_ky_unfilt_vars <- bind_rows(
+  read_lofreq(ifd_s2_s2_ky, 'unfilt') |>
+  filter(sample %in% twins_wb_eids, dp > 100),
+  read_lofreq(ifd_s2_s2_ky_prom, 'unfilt') |>
+  filter(sample %in% twins_wb_eids, dp > 100)) |>
+  arrange(pos_ref, ref, alt)
+```
+
+```{r}
+twins_wb_s2_s2_ky_hc_vars <- bind_rows(
+  read_lofreq(ifd_s2_s2_ky, 'hc') |>
+  filter(sample %in% twins_wb_eids, dp > 100),
+  read_lofreq(ifd_s2_s2_ky_prom, 'hc') |>
+  filter(sample %in% twins_wb_eids, dp > 100))
+```
+
+
+### deCODE 1 vs deCODE 1
+
+
+```{r}
+ifd_d1_d1_ky <- file.path(
+  root_fd, '01_validation', 'data', '01_realigned_variants',
+  '05_bt2_ky' , 'twins', 'd1_d1')
+```
+
+
+```{r}
+twins_wb_d1_d1_ky_many_vars <- read_lofreq(ifd_d1_d1_ky, 'many') |>
+    filter(sample %in% twins_wb_eids, dp > 100)
+```
+
+```{r}
+twins_wb_d1_d1_ky_unfilt_vars <- read_lofreq(ifd_d1_d1_ky, 'unfilt') |>
+    filter(sample %in% twins_wb_eids, dp > 100)
+```
+
+```{r}
+twins_wb_d1_d1_ky_hc_vars <- read_lofreq(ifd_d1_d1_ky, 'hc') |>
+    filter(sample %in% twins_wb_eids, dp > 100)
+```
+
+### Sanger 1 vs Sanger 1
+
+```{r}
+ifd_s1_s1_ky <- file.path(
+  root_fd, '01_validation', 'data', '01_realigned_variants',
+  '05_bt2_ky' , 'twins', 's1_s1')
+```
+
+```{r}
+twins_wb_s1_s1_ky_many_vars <- read_lofreq(ifd_s1_s1_ky, 'many') |>
+  filter(sample %in% twins_wb_eids, dp > 100)
+```
+
+```{r}
+twins_wb_s1_s1_ky_unfilt_vars <- read_lofreq(ifd_s1_s1_ky, 'unfilt') |>
+  filter(sample %in% twins_wb_eids, dp > 100) |>
+  arrange(pos_ref, ref, alt)
+```
+
+```{r}
+twins_wb_s1_s1_ky_hc_vars <- read_lofreq(ifd_s1_s1_ky, 'hc') |>
+  filter(sample %in% twins_wb_eids, dp > 100)
+```
+
+### Combined
+
+
+```{r}
+twins_wb_ky_many_vars <- bind_rows(
+  twins_wb_d1_d1_ky_many_vars |> mutate(SC = 'deCODE', SC = '1st'),
+  twins_wb_s1_s1_ky_many_vars |> mutate(SC = 'Sanger', SC = '1st'),
+  twins_wb_d2_d2_ky_many_vars |> mutate(SC = 'deCODE', SC = '2nd'),
+  twins_wb_s2_s2_ky_many_vars |> mutate(SC = 'Sanger', SC = '2nd')) |>
+  arrange(pos_ref, ref, alt)
+```
+
+```{r}
+twins_wb_ky_unfilt_vars <- bind_rows(
+  twins_wb_d1_d1_ky_unfilt_vars |> mutate(SC = 'deCODE', SC = '1st'),
+  twins_wb_s1_s1_ky_unfilt_vars |> mutate(SC = 'Sanger', SC = '1st'),
+  twins_wb_d2_d2_ky_unfilt_vars |> mutate(SC = 'deCODE', SC = '2nd'),
+  twins_wb_s2_s2_ky_unfilt_vars |> mutate(SC = 'Sanger', SC = '2nd')) |>
+  arrange(pos_ref, ref, alt)
+```
+
+```{r}
+twins_wb_ky_hc_vars <- bind_rows(
+  twins_wb_d1_d1_ky_hc_vars |> mutate(SC = 'deCODE', SC = '1st'),
+  twins_wb_s1_s1_ky_hc_vars |> mutate(SC = 'Sanger', SC = '1st'),
+  twins_wb_d2_d2_ky_hc_vars |> mutate(SC = 'deCODE', SC = '2nd'),
+  twins_wb_s2_s2_ky_hc_vars |> mutate(SC = 'Sanger', SC = '2nd')) |>
+  arrange(pos_ref, ref, alt)
+```
+
+### Filtering
+
+```{r}
+twins_wb_ky_hc_vars_distinct <- twins_wb_ky_hc_vars |>
+  filter(af <= 0.9) |>
+  select(pos_ref, ref, alt) |> distinct() |>
+  arrange(pos_ref, ref, alt) |>
+  mutate(var = paste(pos_ref, ref, alt, sep = '_'))
+```
+
+```{r}
+twins_wb_ky_afs <- twins_wb_ky_unfilt_vars |> 
+  inner_join(twins_wb_ky_hc_vars_distinct,
+             by = c('pos_ref', 'ref', 'alt')) |>
+  mutate(eid = as.numeric(sample)) |>
+  select(-c(sample, pos)) |>
+  relocate(eid)
+```
+
+```{r}
+twins_wb_ky_hc_vars_list <- twins_wb_ky_hc_vars_distinct |>
+  pull(var)
+```
+
+```{r}
+twins_wb_ky_real_afs_comp <- twins_wb |>
+  inner_join(twins_wb_ky_afs,
+             by = c('eid_1' = 'eid')) |>
+  inner_join(twins_wb_ky_afs,
+             by = c('eid_2' = 'eid', 'pos_ref', 'ref', 'alt', 'var'),
+             suffix = c('_1', '_2')) |>
+  arrange(pos_ref, ref, alt) |>
+  mutate(var = forcats::fct_inorder(var))
+```
+
+```{r}
+twins_wb_ky_real_afs_cor <- bind_rows(
+  lapply(X = twins_wb_ky_hc_vars_list,
+         FUN = function(x) {
+           compare_twins_af_var(df = twins_wb_ky_real_afs_comp,
+                                the_var = x) }))
+```
+
+### Rescuing
+
+```{r}
+twins_wb_ky_afs_resc <- twins_wb_ky_many_vars |> 
+  inner_join(twins_wb_ky_hc_vars_distinct,
+             by = c('pos_ref', 'ref', 'alt')) |>
+  mutate(eid = as.numeric(sample)) |>
+  select(-c(sample, pos)) |>
+  relocate(eid)
+```
+
+```{r}
+twins_wb_ky_afs_resc_imp <- twins_wb_ky_afs_resc |> 
+  select(eid, var, af) |> 
+  complete(eid, var, fill = list(af = 0))
+```
+
+```{r}
+twins_wb_ky_real_afs_resc_comp <- twins_wb |>
+  inner_join(twins_wb_ky_afs_resc_imp,
+             by = c('eid_1' = 'eid')) |>
+  inner_join(twins_wb_ky_afs_resc_imp,
+             by = c('eid_2' = 'eid', 'var'),
+             suffix = c('_1', '_2')) |>
+  separate(var, into = c('pos_ref', 'ref', 'alt'), sep = '_', remove = F) |>
+  mutate(pos_ref = as.numeric(pos_ref)) |>
+  arrange(var) |>
+  relocate(pos_ref, ref, alt, var) |>
+  mutate(var = forcats::fct_inorder(var))
+```
+
+
+```{r}
+twins_wb_ky_real_afs_resc_comp |> 
+  filter(pos_ref %in% c(7980)) |>
+  mutate(variant = paste0(pos_ref, ':', ref, '>', alt)) |>
+  ggplot(aes(x = af_1, y = af_2)) +
+  geom_point(size = 2.5, alpha = 0.5, stroke = 1) +
+  ggpubr::stat_cor(
+    aes(label = cor_format(after_stat(r), after_stat(p))),
+    size = 5) +
+  facet_grid(cols = vars(variant)) +
+  theme_bw() +
+  labs(x = "Intragenomic Frequency in Twin 1",
+       y = "Intragenomic Frequency in Twin 2") +
+  theme_pub() +
+  theme(
+    aspect.ratio = 1,
+    legend.position = 'none',
+    panel.grid = element_blank(),
+    panel.border = element_rect(linewidth = 1.3),
+    axis.ticks = element_line(linewidth = 1.3),
+    axis.text = element_text(size = 14),
+    axis.title = element_text(size = 15),
+    strip.text = element_text(size = 15))
+```
+
+```{r}
+twins_wb_ky_real_afs_resc_comp |> 
+  filter(pos_ref %in% c(11277)) |>
+  mutate(variant = paste0(pos_ref, ':', ref, '>', alt)) |>
+  ggplot(aes(x = af_1, y = af_2)) +
+  geom_point(size = 2.5, alpha = 0.5, stroke = 1) +
+  ggpubr::stat_cor(
+    aes(label = cor_format(after_stat(r), after_stat(p))),
+    size = 5) +
+  facet_grid(cols = vars(variant)) +
+  theme_bw() +
+  labs(x = "Intragenomic Frequency in Twin 1",
+       y = "Intragenomic Frequency in Twin 2") +
+  scale_x_continuous(limits = c(0.1, 0.3),
+                     breaks = c(0.1, 0.2, 0.3)) +
+  scale_y_continuous(limits = c(0.1, 0.3),
+                     breaks = c(0.1, 0.2, 0.3)) +
+  theme_pub() +
+  theme(
+    aspect.ratio = 1,
+    legend.position = 'none',
+    panel.grid = element_blank(),
+    panel.border = element_rect(linewidth = 1.3),
+    axis.ticks = element_line(linewidth = 1.3),
+    axis.text = element_text(size = 14),
+    axis.title = element_text(size = 15),
+    strip.text = element_text(size = 15))
+```
+
+```{r}
+twins_wb_ky_real_afs_resc_comp_cor <- bind_rows(
+  lapply(X = twins_wb_ky_hc_vars_list,
+         FUN = function(x) {
+           compare_twins_af_var(df = twins_wb_ky_real_afs_resc_comp,
+                                the_var = x) }))
+```
+
+
+
+```{r}
+twins_wb_ky_real_afs_resc_comp_cor_p <- twins_wb_ky_real_afs_resc_comp_cor |> 
+    separate(Variant, into = c('pos_ref', 'ref', 'alt'), sep = '_') |>
+    mutate(pos_ref = as.numeric(pos_ref)) |>
+    mutate(type = case_when(nchar(ref) > nchar(alt) ~ 'DEL',
+                            nchar(ref) < nchar(alt) ~ 'INS',
+                            TRUE ~ 'SNV')) |>
+  ggplot(aes(x = pos_ref, y = estimate, fill = estimate)) +
+  geom_rect(
+    aes(xmin = 3658, xmax = 5526, ymin = -Inf, ymax = Inf),
+    alpha = 0.3, fill = 'grey95') +
+  geom_rect(
+    aes(xmin = 6597, xmax = 6753, ymin = -Inf, ymax = Inf),
+    alpha = 0.3, fill = 'grey95') +
+  geom_rect(
+    aes(xmin = 7921, xmax = 12971, ymin = -Inf, ymax = Inf),
+    alpha = 0.3, fill = 'grey95') + 
+  geom_point(aes(shape = type), size = 4, alpha = 0.5, stroke = 0.75)  +
+  geom_hline(yintercept = 0.8, colour = 'grey70') +
+  scale_shape_manual(
+    'Variant Type',
+    values = c('SNV' = 22, 'INS' = 24, 'DEL' = 25) ) +
+  scale_x_continuous(breaks = c(0, 5000, 10000),
+                     labels = c('TSS', 5000, 10000)) +
+  scale_y_continuous(limits = c(-0.5, 1), breaks = c(-0.5, 0, 0.5, 1)) +
+  scale_fill_gradient2("Pearson's R", limits = c(-1, 1)) +
+  labs(x = 'Position in rDNA reference',
+       y = 'Intra-twin-pair\nVariant Frequency Correlation') +
+  theme_pub() +
+  theme(
+    panel.grid = element_blank(),
+    legend.position.inside = c(0.1, 0.2),
+    legend.title = element_text(face = 'bold', size = 12),
+    legend.text = element_text(size = 12),
+    axis.title = element_text(size = 13),
+    axis.text = element_text(size = 12))
+```
+
+
+```{r}
+twins_wb_ky_real_afs_resc_comp_cor_p |>
+  ggsave(filename = file.path('..', 'figures', 'F2C.png'),
+         height = 3.5, width = 7.5, dpi = 600)
+```
+
+### Comparison with ONT
+
+```{r}
+HG00127_20u_28S_afs <- read_csv(
+  '../../../../../1000g_gbr_ont/output/HG00127_20u_28S_afs.csv',
+         col_types = cols())
+```
+
+```{r}
+HG00127_many_28S_afs <- read_csv(
+  '../../../../../1000g_gbr_ont/output/HG00127_many_28S_afs.csv',
+         col_types = cols())
+```
+
+
+```{r, fig.height = 4, fig.width = 4.5}
+illumina_ont_p <- HG00127_20u_28S_afs |>
+  inner_join(
+      twins_wb_ky_real_afs_resc_comp_cor |>
+          mutate(g = if_else(estimate > 0.8, 'R ≥ 0.8', 'R < 0.8')),
+      by = c('variant' = 'Variant')) |>
+  inner_join(HG00127_many_28S_afs,
+             by = c('variant', 'pos_ref', 'ref', 'alt'),
+             suffix = c('_1', '_2')) |> select(g, variant, af_1, af_2) |>
+  rename('ONT' = 'af_1', 'Illumina' = 'af_2') |>
+  pivot_longer(-c('g', 'variant'), names_to = 'Platform', values_to = 'IGF') |>
+  ggplot(aes(x = Platform, y = IGF)) +
+  ggpubr::stat_compare_means(paired = T,
+                             comparisons = list(c(1, 2)),
+                             size = 5, label.y = 0.9) +
+  geom_boxplot(aes(group = Platform, colour = Platform), 
+               linewidth = 1,
+               outlier.alpha = 0) +
+  geom_line(aes(group = `variant`),
+          linewidth = 0.3, colour = 'grey70') +
+  geom_point(aes(fill = Platform), alpha = 0.8, 
+             shape = 21, size = 3, stroke = 0.75) +
+  scale_colour_manual(values = c('Illumina' = 'darkorange',
+                                 'ONT' = 'aquamarine4')) +
+  scale_fill_manual(values = c('Illumina' = 'darkorange',
+                                 'ONT' = 'aquamarine4')) +
+  scale_y_continuous(limits = c(0, 1), breaks = c(0, 0.5, 1), labels = c('', 0.5, 1)) +
+  labs(x = '', y = 'Intragenomic Variant Frequency') +
+  facet_grid(cols = vars(g)) +
+  theme_pub() +
+  theme(legend.position = 'none')
+```
+
+```{r}
+illumina_ont_p |>
+  ggsave(filename = file.path('..', 'figures', 'F2D.png'),
+         height = 4.5, width = 4.5, dpi = 600)
+```
+
+### "Mutation" profiles
+
+```{r}
+complement <- function(base) {
+  if(base == 'A') return('T')
+  if(base == 'C') return('G')
+  if(base == 'G') return('C')
+  return('A')
+}
+```
+
+```{r, fig.height = 5, fig.width = 4}
+tgs_p <- twins_wb_ky_real_afs_resc_comp_cor |> 
+    separate(Variant, into = c('pos_ref', 'ref', 'alt'), sep = '_') |>
+    mutate(pos_ref = as.numeric(pos_ref)) |>
+    mutate(type = case_when(nchar(ref) > nchar(alt) ~ 'DEL',
+                            nchar(ref) < nchar(alt) ~ 'INS',
+                            TRUE ~ 'SNV')) |>
+    filter(type == 'SNV') |>
+    rowwise() |>
+    mutate(
+      ref_change = if_else(ref %in% c('C', 'T'), ref, complement(ref)),
+      alt_change = if_else(ref %in% c('C', 'T'), alt, complement(alt)),
+      ref = complement(ref_change),
+      alt = complement(alt_change),
+      change = paste0(
+        ref_change, '>', alt_change, '\n',
+        '(', ref, '>', alt, ')')) |>
+    ggplot(aes(x = change, y = estimate)) +
+    geom_boxplot(aes(colour = change), outlier.alpha = 0) +
+    geom_jitter(aes(colour = change), alpha = 0.8) +
+    scale_y_continuous(limits = c(-0.7, 1.02)) +
+    scale_colour_brewer(palette = 'Blues') +
+    theme_pub() +
+    labs(x = 'Base change',
+         y = 'Intra-twin-pair Variant\nFrequency Correlation') +
+    theme(panel.grid = element_blank(),
+          axis.text = element_text(size = 13),
+          axis.title = element_text(size = 14),
+          legend.position = 'none',
+          panel.border = element_rect(linewidth = 1.1))
+```
+
+```{r}
+tgs_p |>
+  ggsave(filename = file.path('..', 'figures', 'F2E.png'),
+         height = 4, width = 4.5, dpi = 600)
+```
+
+
+## Extraction of "rDNA" reads
+
+```{r}
+compare_af_var <- function(df, the_var = variants[1]) {
+  df_aux <- df |> filter(var == the_var)
+  if(nrow(df_aux) < 3) return(NULL)
+  cor.test(df_aux$af_r, df_aux$af_e) |>
+    broom::tidy() |>
+    mutate(
+      Variant = the_var,
+      N = nrow(df_aux)) |>
+    relocate(Variant, N)}
+```
+
+
+```{r}
+ifd_s2_s2_ext <- file.path(
+  root_fd, '01_validation', 'data', '02_extracted_variants', 'trans_min',
+  'bt2_ky' , 'twins', 's2_s2')
+ifd_s2_s2_ext_prom <- file.path(
+  root_fd, '01_validation', 'data', '02_extracted_variants_promoter', 'trans_min',
+  'bt2_ky' , 'twins', 's2_s2')
+ifd_d2_d2_ext <- file.path(
+  root_fd, '01_validation', 'data', '02_extracted_variants', 'trans_min',
+  'bt2_ky' , 'twins', 'd2_d2')
+ifd_d2_d2_ext_prom <- file.path(
+  root_fd, '01_validation', 'data', '02_extracted_variants_promoter', 'trans_min',
+  'bt2_ky' , 'twins', 'd2_d2')
+ifd_s1_s1_ext <- file.path(
+  root_fd, '01_validation', 'data', '02_extracted_variants', 'trans_min',
+  'bt2_ky' , 'twins', 's1_s1')
+ifd_d1_d1_ext <- file.path(
+  root_fd, '01_validation', 'data', '02_extracted_variants', 'trans_min',
+  'bt2_ky' , 'twins', 'd1_d1')
+```
+
+
+```{r}
+twins_d2_d2_ext_many_vars <- bind_rows(
+  read_lofreq(ifd_d2_d2_ext, 'many'),
+  read_lofreq(ifd_d2_d2_ext_prom, 'many'))
+twins_s2_s2_ext_many_vars <- bind_rows(
+  read_lofreq(ifd_s2_s2_ext, 'many'),
+  read_lofreq(ifd_s2_s2_ext_prom, 'many'))
+twins_d1_d1_ext_many_vars <- read_lofreq(ifd_d1_d1_ext, 'many')
+twins_s1_s1_ext_many_vars <- read_lofreq(ifd_s1_s1_ext, 'many')
+```
+
+```{r}
+twins_ext_many_vars <- bind_rows(
+  twins_d1_d1_ext_many_vars |> mutate(SC = 'deCODE', SR = '1st'),
+  twins_s1_s1_ext_many_vars |> mutate(SC = 'Sanger', SR = '1st'),
+  twins_d2_d2_ext_many_vars |> mutate(SC = 'deCODE', SR = '2nd'),
+  twins_s2_s2_ext_many_vars |> mutate(SC = 'Sanger', SR = '2nd')) |>
+  mutate(var = paste(pos_ref, ref, alt, sep = '_')) |>
+  arrange(sample, pos_ref, ref, alt)
+```
+
+
+```{r}
+selected_variants_cor <- twins_wb_ky_real_afs_resc_comp_cor |>
+  filter(estimate >= 0.8)
+```
+
+```{r}
+comparison_real_ext <- full_join(
+  twins_ext_many_vars |>
+    filter(var %in% selected_variants_cor$Variant) |>
+    mutate(eid = as.numeric(sample)) |>
+    filter(eid %in% twins_wb_ky_afs_resc$eid) |>
+    select(eid, var, af),
+  twins_wb_ky_afs_resc |>
+    filter(var %in% selected_variants_cor$Variant) |>
+    select(eid, var, af),
+  by = c('eid', 'var'),
+  suffix = c('_r', '_e'))
+```
+
+#### Imputed 0s
+
+```{r}
+comparison_real_ext_imp <- comparison_real_ext |>
+  replace_na(list(af_r = 0, af_e = 0))
+```
+
+```{r}
+comparison_real_ext_imp_cor <- bind_rows(
+  lapply(X = comparison_real_ext_imp |> pull(var) |> unique(),
+         FUN = function(x) {
+           compare_af_var(df = comparison_real_ext_imp,
+                                the_var = x) }))
+```
+
+```{r}
+comparison_real_ext_imp_cor_p <- comparison_real_ext_imp_cor |>
+  separate(Variant, 
+           into = c('pos_ref', 'ref', 'alt'), 
+           sep = '_', remove = F) |>
+  mutate(pos_ref = as.numeric(pos_ref)) |>
+  mutate(type = case_when(nchar(ref) > nchar(alt) ~ 'DEL',
+                          nchar(ref) < nchar(alt) ~ 'INS',
+                          TRUE ~ 'SNV')) |>
+  ggplot(aes(x = pos_ref, y = estimate, fill = estimate)) +
+  geom_rect(
+    aes(xmin = 3658, xmax = 5526, ymin = -Inf, ymax = Inf),
+    alpha = 0.3, fill = 'grey95') +
+  geom_rect(
+    aes(xmin = 6597, xmax = 6753, ymin = -Inf, ymax = Inf),
+    alpha = 0.3, fill = 'grey95') +
+  geom_rect(
+    aes(xmin = 7921, xmax = 12971, ymin = -Inf, ymax = Inf),
+    alpha = 0.3, fill = 'grey95') + 
+  geom_point(aes(shape = type), size = 4, alpha = 0.5, stroke = 0.75)  +
+  scale_x_continuous(breaks = c(0, 5000, 10000), 
+                     labels = c('TSS', 5000, 10000)) +
+  scale_shape_manual(
+    'Variant Type',
+    values = c('SNV' = 22, 'INS' = 24, 'DEL' = 25) ) +
+  scale_y_continuous(limits = c(0.5, 1), breaks = c(0.5, 0.75, 1)) +
+  scale_fill_gradient2("Pearson's R", limits = c(-1, 1)) +
+  labs(x = 'Position in rDNA reference',
+       y = 'Variant Correlation between\nFull Realignment and\nPrior rDNA Extraction') +
+  theme_pub() +
+  theme(
+    panel.grid = element_blank(),
+    legend.position.inside = c(0.1, 0.2),
+    legend.title = element_text(face = 'bold', size = 12),
+    legend.text = element_text(size = 12),
+    axis.title = element_text(size = 13),
+    axis.text = element_text(size = 12))
+```
+
+```{r}
+comparison_real_ext_imp_cor_p |>
+  ggsave(filename = file.path('..', 'figures', 'F3E.png'),
+         height = 3.5, width = 7.5, dpi = 600)
+```
+
+
+```{r}
+comparison_real_ext_imp |>
+  filter(var %in% c('10104_G_C', '11253_A_G')) |>
+  mutate(var = if_else(grepl('10104', var), '10104:G>C', '11253:A>G')) |>
+  ggplot(aes(x = af_r, y = af_e)) +
+  facet_grid(cols = vars(var)) +
+  geom_point(size = 4, alpha = 0.5, 
+             shape = 21, fill = 'grey90',
+             stroke = 0.75) +
+  scale_x_continuous(limits = c(0, 0.3), 
+                     breaks = c(0, 0.1, 0.2, 0.3),
+                     label = c('', 0.1, 0.2, 0.3)) +
+  scale_y_continuous(limits = c(0, 0.3), 
+                     breaks = c(0, 0.1, 0.2, 0.3),
+                     label = c('', 0.1, 0.2, 0.3)) +
+  labs(x = 'Intragenomic Variant Frequency from Full Prealigned Library',
+       y = 'Intragenomic Variant Frequency \nrom Extracted rDNA-Analogue Reads') +
+  theme_pub()
+```
+
+## Selection of variants
+
+```{r}
+selected_variants <- comparison_real_ext_imp_cor |>
+  filter(estimate > 0.85) |>
+  separate(Variant, into = c('pos_ref', 'ref', 'alt'), sep = '_', remove = F) |>
+  mutate(pos_ref = as.numeric(pos_ref),
+         var = fct_inorder(Variant)) |>
+  select(var, pos_ref, ref, alt) |> 
+  mutate(type = case_when(nchar(ref) > nchar(alt) ~ 'DEL',
+                          nchar(ref) < nchar(alt) ~ 'INS',
+                          TRUE ~ 'SNV'))
+```
+
+```{r}
+selected_variants_p <- selected_variants |>
+  mutate(pos_bin = cut_interval(pos_ref, length = 100)) |>
+  separate(pos_bin, into = c('start_bin', 'end_bin'), sep = ',', remove = F) |>
+  mutate(start_bin = as.numeric(gsub('\\[|\\(', '', start_bin)),
+         end_bin = as.numeric(gsub('\\)|\\]', '', end_bin)),
+         middle_bin = (start_bin + end_bin)/2) |>
+  group_by(middle_bin, type) |>
+  summarise(num_variants = n_distinct(var), .groups = 'drop') |>
+  ggplot(aes(x = middle_bin, y = num_variants)) +
+  geom_rect(
+    aes(xmin = 3658, xmax = 5526, ymin = -Inf, ymax = Inf),
+    alpha = 0.3, fill = 'grey95') +
+  geom_rect(
+    aes(xmin = 6597, xmax = 6753, ymin = -Inf, ymax = Inf),
+    alpha = 0.3, fill = 'grey95') +
+  geom_rect(
+    aes(xmin = 7921, xmax = 12971, ymin = -Inf, ymax = Inf),
+    alpha = 0.3, fill = 'grey95') +
+  geom_col(aes(fill = type), colour = 'grey20', alpha = 0.7, linewidth = 0.2) +
+  scale_x_continuous(breaks = c(0, 5000, 10000), 
+                     labels = c('TSS', 5000, 10000)) +
+  scale_fill_manual('Variant Type',
+                    values = c('SNV' = "#0072B2", 
+                               'INS' = "#009E73",
+                               'DEL' = "#D55E00")) +
+  labs(x = 'Position in rDNA reference', y = 'Number of Variants') +
+  scale_y_continuous(limits = c(0, 20),
+                     breaks = c(0, 5, 10, 15, 20),
+                     labels = c(0, 5, 10, 15, 20)) +
+  theme_pub() +
+  theme(panel.grid = element_blank(),
+        legend.title = element_text(face = 'bold'))
+```
+
+```{r}
+selected_variants_p |> 
+  ggsave(filename = file.path('..', 'figures', 'F2F.png'), 
+         height = 3.5, width = 12, dpi = 300)
+```
+
+
+
+```{r}
+selected_variants_af <- comparison_real_ext_imp |> 
+  inner_join(
+    selected_variants,
+    by = c('var'), 
+   relationship = 'many-to-many') |>
+  arrange(pos_ref) |>
+  mutate(var = fct_inorder(var)) |>
+  select(eid, pos_ref, ref, alt, af = af_e)
+```
+
+
+```{r}
+selected_variants_af_p <- selected_variants_af |>
+  mutate(variant = paste(pos_ref, ref, alt)) |>
+  mutate(type = case_when(nchar(ref) > nchar(alt) ~ 'DEL',
+                          nchar(ref) < nchar(alt) ~ 'INS',
+                          TRUE ~ 'SNV')) |>
+  ggplot(aes(x = pos_ref, y = af, group = variant)) +
+  geom_rect(
+    aes(xmin = 3658, xmax = 5526, ymin = -Inf, ymax = Inf),
+    alpha = 0.3, fill = 'grey95') +
+  geom_rect(
+    aes(xmin = 6597, xmax = 6753, ymin = -Inf, ymax = Inf),
+    alpha = 0.3, fill = 'grey95') +
+  geom_rect(
+    aes(xmin = 7921, xmax = 12971, ymin = -Inf, ymax = Inf),
+    alpha = 0.3, fill = 'grey95') +
+  geom_point(aes(fill = type, shape = type, colour = type), 
+             size = 0.5, 
+             alpha = 0.4,
+             position = position_dodge(width = 0.1)) +
+  scale_shape_manual(
+    'Variant Type',
+    values = c('SNV' = 22, 'INS' = 24, 'DEL' = 25) ) +
+  scale_fill_manual('Variant Type',
+                    values = c('SNV' = "#0072B2", 
+                               'INS' = "#009E73",
+                               'DEL' = "#D55E00")) +
+  
+  scale_colour_manual('Variant Type',
+                    values = c('SNV' = "#0072B2", 
+                               'INS' = "#009E73",
+                               'DEL' = "#D55E00")) +
+  labs(x = 'Position in rDNA unit', y = 'Intragenomic Variant Frequency') +
+  scale_y_continuous(limits = c(0, 1),
+                     breaks = c(0, 0.5, 1),
+                     labels = c('', 0.5, 1)) +
+  scale_x_continuous(breaks = c(0, 5000, 10000), 
+                     labels = c('TSS', 5000, 10000)) +
+  theme_pub() +
+  theme(panel.grid = element_blank(),
+        legend.title = element_text(face = 'bold')) +
+  guides(
+    shape = guide_legend(override.aes = list(size = 3))
+  )
+```
+
+```{r}
+selected_variants_af_p |> 
+  ggsave(filename = file.path('..', 'figures', 'FS05.png'),
+         height = 6, width = 15, dpi = 300)
+```
+
+
+```{r}
+twins_wb_ky_real_afs_resc_comp |>
+  filter(pos_ref >= 3658, pos_ref <= 5526) |>
+  inner_join(selected_variants, by = c('var', 'pos_ref', 'ref', 'alt')) |>
+  mutate(variant = paste0(pos_ref, ':', ref, '>', alt)) |>
+  ggplot(aes(x = af_1, y = af_2)) +
+  facet_grid(cols = vars(variant)) +
+  ggpubr::stat_cor(aes(label = cor_format(..r.., ..p..)),
+                   size = 5) +
+  geom_point(size = 4, alpha = 0.5, 
+             shape = 21, fill = 'grey90',
+             stroke = 0.75) +
+  scale_x_continuous(limits = c(0, 0.2), 
+                     breaks = c(0, 0.1, 0.2),
+                     label = c('', 0.1, 0.2)) +
+  scale_y_continuous(limits = c(0, 0.2), 
+                     breaks = c(0, 0.1, 0.2),
+                     label = c('', 0.1, 0.2)) +
+  labs(x = 'Intragenomic Variant Frequency in Twin 1',
+       y = 'Intragenomic Variant Frequency in Twin 2') +
+  theme_pub() +
+  theme(aspect.ratio = 1)
+```
+

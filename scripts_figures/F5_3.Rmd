@@ -1,0 +1,57 @@
+---
+title: "Compare ES15L across primates"
+---
+
+```{r}
+library(tidyverse)
+library(scales)
+library(ggtree)
+source('../setup.R')
+options(ignore.negative.edge=TRUE)
+```
+
+
+
+```{r}
+tree <- ggtree::read.tree(file = file.path(
+  root_fd, '02_analysis', 'data', '09_phylo', 'es15l_tree.txt')) |>
+  ape::root(outgroup = 'mSymSyn1_ref', resolve.root = T)
+```
+
+```{r}
+tree_labels <- as_tibble(tree) |>
+  separate(label, into = c('Species', 'Haplo'), remove = F) |>
+  group_by(Species) |>
+  mutate(Species = case_when(
+    grepl('HomSap', Species) ~ 'Homo Sapiens',
+    grepl('GorGor', Species) ~ 'Gorilla Gorilla',
+    grepl('PanPan', Species) ~ 'Pan Paniscus',
+    grepl('PanTro', Species) ~ 'Pan Troglodytes',
+    grepl('PonAbe', Species) ~ 'Pongo Abelii',
+    grepl('PonPyg', Species) ~ 'Pongo Pygmaeus',
+    grepl('SymSyn', Species) ~ 'Symphalangus Syndactylus',
+  )) |>
+  ungroup() |>
+  mutate(Haplo = toupper(Haplo)) |>
+  mutate(label_2 = if_else(is.na(Species), label, paste0(Species, ' (', Haplo, ')'))) |>
+  select(parent, node, label_2) 
+```
+
+
+```{r}
+tree_labelled <- as_tibble(tree) |>
+  inner_join(tree_labels, by = c('parent', 'node')) |>
+  mutate(label = label_2) |>
+  tidytree::as.phylo(use.labels = TRUE)
+```
+
+```{r, fig.width = 12, fig.height = 6}
+(ggtree(tree_labelled) |>
+  ggtree::rotate(51)) + 
+  theme_tree2() + 
+  geom_tiplab(align=TRUE, linesize=.5) +
+  xlim(-0.001, 0.34) +
+  theme(axis.text.x = element_text(size = 12))
+```
+
+

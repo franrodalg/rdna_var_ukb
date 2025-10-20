@@ -1,0 +1,111 @@
+---
+title: "PHESANT analysis of total CN associations"
+---
+
+```{r}
+library(tidyverse)
+source('../setup.R')
+```
+
+
+# Total CN
+
+```{r}
+phesant_cn <- read_csv(
+  file.path(root_fd, '..', 'blood_500k', 'data',
+            'phesant_both_releases', 'output_cleaned', 
+            'phesant_both_releases_1p_sc_unrel.csv'),
+  col_types = cols()) |>
+  mutate(description = gsub('phill', 'phil', description)) |>
+  mutate(fdr = p.adjust(pvalue, method = 'fdr'),
+         lpval = -log10(pvalue)) 
+phesant_cn_fdr <- phesant_cn |>
+  filter(fdr < 0.01) |>
+  select(ID = varName, description, beta, lower, upper, pvalue, lpval, fdr)
+```
+
+```{r}
+traits_cn_fdr <- phesant_cn_fdr |> 
+  select(ID, description) |> 
+  distinct() |>
+  mutate(trait = paste0('x', ID, '_0_0'))  |> 
+  mutate(type = case_when(
+    grepl('height|weight|Waist|Weight|body size', description) ~  'BODY SIZE',
+    grepl('count|crit|volume|cyte|phil|Platelet|globin', description) ~  'BLOOD COUNT',
+    grepl('first reported|glasses|medications|illness|chest|health|pain|disorder',
+          description) ~  'NON-CANCER\nCONDITIONS',
+    grepl('Cancer|cancer', description) ~ 'CANCER',
+    TRUE ~  'BLOOD BIOCHEM.'))
+```
+
+
+```{r}
+phesant_cn_beta_p <- phesant_cn_fdr |>
+  inner_join(traits_cn_fdr, by = c('ID', 'description')) |>
+  arrange(pvalue, description) |>
+  mutate(description = fct_rev(fct_inorder(description))) |>
+  ggplot(aes(x = beta, xmin = lower, xmax = upper, y = description)) +
+  geom_vline(xintercept = 0, linewidth = 0.5, colour = 'grey80') +
+  geom_crossbar(fill = 'grey90', colour = 'grey60',
+                linewidth = 0.5, fatten = 1, alpha = 0.5) +
+  geom_point(aes(shape = type, fill = type),
+             alpha = 0.8, size = 2) +
+  facet_grid(rows = vars(type), scales = 'free_y', space = 'free') +
+  labs(y = '', x = 'Standardised Beta, 95% CI') +
+  scale_x_continuous(
+    limits = c(-0.085, 0.085),
+    breaks = c(-0.08, -0.04, 0, 0.04, 0.08)) +
+  scale_fill_manual('Phenotype category',
+                    values = c('steelblue3', 'firebrick3', 
+                               'gold3', 'olivedrab3')) +
+  scale_shape_manual('Phenotype category',
+                     values = c(24, 23, 22, 21)) +
+  theme_pub() +
+  theme(legend.position = 'none',
+        legend.title = element_text(face = 'bold',
+                                    size = 12),
+        legend.text = element_text(size = 11),
+        legend.spacing.y = unit(0.3, 'lines'),
+        legend.box.background = element_rect(linewidth = 0.4),
+        strip.text = element_blank(),
+        panel.grid = element_blank(),
+        axis.title = element_text(face = 'bold')) 
+```
+
+```{r}
+phesant_cn_beta_p |>
+  ggsave(filename = file.path('..', 'figures', 'F4A_betas.png'),
+         height = 10, width = 12, dpi = 900)
+```
+
+
+
+```{r}
+phesant_cn_fdr_p <- phesant_cn_fdr |>
+  inner_join(traits_cn_fdr, by = c('ID', 'description')) |>
+  arrange(pvalue, description) |>
+  mutate(description = fct_rev(fct_inorder(description)),
+         lfdr = -log10(fdr)) |>
+  ggplot(aes(x = lfdr, xmin = lower, xmax = upper, y = description)) +
+  geom_col(fill = 'grey90', colour = 'grey20',
+                linewidth = 0.5, alpha = 0.5) +
+  facet_grid(rows = vars(type), scales = 'free_y', space = 'free') +
+  labs(y = '', x = bquote(bold(-log[10](FDR)))) +
+  theme_pub() +
+  theme(legend.position = 'none',
+        legend.title = element_text(face = 'bold',
+                                    size = 12),
+        legend.text = element_text(size = 11),
+        legend.spacing.y = unit(0.3, 'lines'),
+        legend.box.background = element_rect(linewidth = 0.4),
+        strip.text = element_blank(),
+        panel.grid = element_blank(),
+        axis.ticks.y = element_blank()) 
+```
+
+
+```{r}
+phesant_cn_fdr_p |>
+  ggsave(filename = file.path('..', 'figures', 'F4A_fdr.png'),
+         height = 10, width = 11, dpi = 900)
+```
